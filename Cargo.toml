@@ -1,0 +1,10 @@
+[package]
+name = "crustasync"
+description = "A file syncing cli/lib written in the crustacean language"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = "4.5.4"
+log = "0.4.21"
+tokio = { version = "1.37.0", features = ["full"] }
