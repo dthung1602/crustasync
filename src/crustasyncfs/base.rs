@@ -1,56 +1,66 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json as serde_lib;
+use std::path::Path;
 use tokio::io;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum Node {
-    File(File),
-    Directory(Directory),
+pub enum NodeType {
+    File,
+    Directory,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct File {
+pub struct Node {
+    pub node_type: NodeType,
     pub name: String,
     pub updated_at: DateTime<Utc>,
-    pub content_hash: Vec<u8>, // TODO reconsider
+    pub content_hash: [u8; 20],
+    pub children: Vec<Node>, // TODO box node?
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Directory {
-    pub name: String,
-    pub updated_at: DateTime<Utc>,
-    pub content_hash: Vec<u8>, // TODO reconsider
-    pub children: Vec<Node>,   // TODO box node?
-}
+impl Node {
+    pub fn is_file(&self) -> bool {
+        match self.node_type {
+            NodeType::File => true,
+            NodeType::Directory => false,
+        }
+    }
 
-pub type Content = Vec<u8>; // TODO stream?, buffer?
+    pub fn is_dir(&self) -> bool {
+        match self.node_type {
+            NodeType::File => false,
+            NodeType::Directory => true,
+        }
+    }
+}
 
 pub trait FileSystem {
     const CRUSTASYNC_CONFIG_FILE: &'static str = ".crustasync";
 
-    async fn write(&self, path: String, content: Content) -> io::Result<()>;
+    async fn write(&self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()>;
 
-    async fn read(&self, path: String) -> io::Result<Content>;
+    async fn read(&self, path: impl AsRef<Path>) -> io::Result<Vec<u8>>;
 
-    async fn mkdir(&self, path: String) -> io::Result<()>;
+    async fn mkdir(&self, path: impl AsRef<Path>) -> io::Result<()>;
 
-    async fn rm(&self, path: String) -> io::Result<()>;
+    async fn rm(&self, path: impl AsRef<Path>) -> io::Result<()>;
 
-    async fn build_tree(&self) -> io::Result<Directory>;
+    async fn mv(&self, src: impl AsRef<Path>, dest: impl AsRef<Path>) -> io::Result<()>;
+
+    async fn build_tree(&self) -> io::Result<Node>;
 
     async fn sync_fs_to_file(&self) -> io::Result<()> {
         let tree = self.build_tree().await?;
         let serialized = serde_lib::to_string(&tree).unwrap().into_bytes();
-        self.write(Self::CRUSTASYNC_CONFIG_FILE.to_string(), serialized)
-            .await?;
+        self.write(Self::CRUSTASYNC_CONFIG_FILE, serialized).await?;
         Ok(())
     }
 
-    async fn read_fs_from_file(&self) -> io::Result<Directory> {
-        let content = self.read(Self::CRUSTASYNC_CONFIG_FILE.to_string()).await?;
+    async fn read_fs_from_file(&self) -> io::Result<Node> {
+        let content = self.read(Self::CRUSTASYNC_CONFIG_FILE).await?;
         let json_str = String::from_utf8(content).unwrap();
-        let tree: Directory = serde_lib::from_str(&json_str).unwrap();
+        let tree: Node = serde_lib::from_str(&json_str).unwrap();
         Ok(tree)
     }
 }

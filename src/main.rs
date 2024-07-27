@@ -1,4 +1,5 @@
 mod crustasyncfs;
+mod diff;
 
 use crustasyncfs::base::{FileSystem, Node};
 use crustasyncfs::local::LocalFileSystem;
@@ -24,20 +25,20 @@ use tokio::io;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let local_fs = LocalFileSystem::new(".".to_string()).await?;
+    let local_fs = LocalFileSystem::new(".").await?;
     local_fs.sync_fs_to_file().await?;
+
     let root = local_fs.build_tree().await?;
-    print_tree(&Node::Directory(root));
+    print_tree(&root);
+
     let root = local_fs.read_fs_from_file().await?;
-    print_tree(&Node::Directory(root));
+    print_tree(&root);
+
     local_fs.mkdir("new_folder/net/www".to_string()).await?;
     local_fs
-        .write(
-            "new_folder/net/somefile".to_string(),
-            "this is a text".to_string().into_bytes(),
-        )
+        .write("new_folder/net/somefile", "this is a text")
         .await?;
-    let content = local_fs.read("new_folder/net/somefile".to_string()).await?;
+    let content = local_fs.read("new_folder/net/somefile").await?;
     let content = String::from_utf8(content).unwrap();
     println!(">>> CONTENT: {content}");
     return Ok(());
@@ -49,16 +50,12 @@ fn print_tree(node: &Node) {
 
 fn print_node_with_level(node: &Node, level: usize) {
     let padding = ' '.to_string().repeat(level * 4);
-    match node {
-        Node::File(file) => {
-            println!("{}{}", padding, file.name);
-        }
-        Node::Directory(dir) => {
-            println!("{}{}", padding, dir.name);
-            let level = level + 1;
-            for child in &dir.children {
-                print_node_with_level(child, level)
-            }
+    println!("{}{}", padding, node.name);
+
+    if node.is_dir() {
+        let level = level + 1;
+        for child in &node.children {
+            print_node_with_level(child, level)
         }
     }
 }
