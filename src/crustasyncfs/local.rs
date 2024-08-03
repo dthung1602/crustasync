@@ -8,31 +8,31 @@ use tokio::io;
 
 use crate::crustasyncfs::base::{FileSystem, Node, NodeType};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LocalFileSystem {
-    root_dir: String,
+    pub(crate) root_dir: PathBuf,
 }
 
 impl FileSystem for LocalFileSystem {
     async fn write(&self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()> {
-        let path_buf = self.absolute_path(path);
+        let path_buf = self.abs_path(path);
         let parent = path_buf.parent().unwrap();
         fs::create_dir_all(parent).await?;
         fs::write(path_buf, content).await
     }
 
     async fn read(&self, path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
-        let path_buf = self.absolute_path(path);
+        let path_buf = self.abs_path(path);
         fs::read(path_buf).await
     }
 
     async fn mkdir(&self, path: impl AsRef<Path>) -> io::Result<()> {
-        let path_buf = self.absolute_path(path);
+        let path_buf = self.abs_path(path);
         fs::create_dir_all(path_buf).await
     }
 
     async fn rm(&self, path: impl AsRef<Path>) -> io::Result<()> {
-        let path_buf = self.absolute_path(path);
+        let path_buf = self.abs_path(path);
         let meta = fs::metadata(&path_buf).await?;
         if meta.is_dir() {
             fs::remove_dir_all(&path_buf).await
@@ -42,13 +42,12 @@ impl FileSystem for LocalFileSystem {
     }
 
     async fn mv(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
-        fs::rename(self.absolute_path(from), self.absolute_path(to)).await?;
+        fs::rename(self.abs_path(from), self.abs_path(to)).await?;
         Ok(())
     }
 
     async fn build_tree(&self) -> io::Result<Node> {
-        let path_buf = PathBuf::from(&self.root_dir);
-        let root = self.build_node(&path_buf).await?;
+        let root = self.build_node(&self.root_dir, "", true).await?;
 
         match root.node_type {
             NodeType::File => Err(io::Error::new(
@@ -73,34 +72,42 @@ impl LocalFileSystem {
         }
 
         let local_fs = LocalFileSystem {
-            root_dir: absolute_path.to_str().unwrap().to_string(),
+            root_dir: absolute_path,
         };
         Ok(local_fs)
     }
 
-    fn absolute_path(&self, path: impl AsRef<Path>) -> PathBuf {
-        let mut path_buf = PathBuf::from(&self.root_dir);
-        path_buf.push(path);
-        path_buf
+    fn abs_path(&self, relative_path: impl AsRef<Path>) -> PathBuf {
+        self.root_dir.join(relative_path)
     }
 
-    async fn build_node(&self, path_buf: &PathBuf) -> io::Result<Node> {
-        let meta = fs::metadata(path_buf).await?;
+    async fn build_node(
+        &self,
+        abs_path: impl AsRef<Path>,
+        parent_path: impl AsRef<Path>,
+        is_root: bool,
+    ) -> io::Result<Node> {
+        let meta = fs::metadata(&abs_path).await?;
         let updated_at = DateTime::from(meta.modified().unwrap());
-
-        let name = String::from(path_buf.file_name().unwrap().to_str().unwrap());
+        let name = String::from(abs_path.as_ref().file_name().unwrap().to_str().unwrap());
+        let path = if is_root {
+            PathBuf::from("")
+        } else {
+            parent_path.as_ref().join(&name)
+        };
 
         if meta.is_dir() {
-            let mut result = fs::read_dir(path_buf).await?;
+            let mut result = fs::read_dir(abs_path).await?;
             let mut children = vec![];
 
             while let Some(entry) = result.next_entry().await? {
                 let entry_path = entry.path();
-                let node = Box::pin(self.build_node(&entry_path)).await?;
+                let node = Box::pin(self.build_node(entry_path, &path, false)).await?;
                 children.push(node);
             }
 
             let mut hasher = Sha1::new();
+            hasher.update("DIRECTORY");  // To make sure empty dir != empty file
 
             children.sort_by_key(|node| node.name.clone().to_lowercase());
 
@@ -113,6 +120,7 @@ impl LocalFileSystem {
             return Ok(Node {
                 node_type: NodeType::Directory,
                 name,
+                path,
                 updated_at,
                 content_hash: hasher.finalize().into(),
                 children,
@@ -120,16 +128,19 @@ impl LocalFileSystem {
         }
 
         // TODO read file as stream
-        let content = fs::read(path_buf).await?;
+        let content = fs::read(abs_path).await?;
         let mut hasher = Sha1::new();
+        hasher.update("FILE");   // To make sure empty dir != empty file
         hasher.update(content);
         let content_hash = hasher.finalize().into();
-        return Ok(Node {
+
+        Ok(Node {
             node_type: NodeType::File,
             name,
+            path,
             updated_at,
             content_hash,
             children: vec![],
-        });
+        })
     }
 }

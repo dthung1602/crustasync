@@ -1,8 +1,13 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json as serde_lib;
-use std::path::Path;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use tokio::io;
+
+// ------------------------------
+// region Node
+// ------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum NodeType {
@@ -10,12 +15,15 @@ pub enum NodeType {
     Directory,
 }
 
+pub type ContentHash = [u8; 20];
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Node {
     pub node_type: NodeType,
     pub name: String,
+    pub path: PathBuf,
     pub updated_at: DateTime<Utc>,
-    pub content_hash: [u8; 20],
+    pub content_hash: ContentHash,
     pub children: Vec<Node>, // TODO box node?
 }
 
@@ -35,7 +43,54 @@ impl Node {
     }
 }
 
-pub trait FileSystem {
+pub struct NodeIterator<'a> {
+    node: &'a Node,
+    dequeue: VecDeque<&'a Node>,
+}
+
+impl<'a> NodeIterator<'a> {
+    fn new(node: &'a Node) -> NodeIterator<'a> {
+        NodeIterator {
+            node,
+            dequeue: VecDeque::from(vec![node]),
+        }
+    }
+}
+
+impl<'a> Iterator for NodeIterator<'a> {
+    type Item = &'a Node;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let front = match self.dequeue.pop_front() {
+            None => return None,
+            Some(front) => front,
+        };
+
+        if front.is_dir() {
+            for child in &front.children {
+                self.dequeue.push_back(child);
+            }
+        }
+
+        Some(front)
+    }
+}
+
+impl<'a> IntoIterator for &'a Node {
+    type Item = &'a Node;
+    type IntoIter = NodeIterator<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        NodeIterator::new(self)
+    }
+}
+// endregion
+
+// ------------------------------
+// region FileSystem
+// ------------------------------
+
+pub trait FileSystem: Clone {
     const CRUSTASYNC_CONFIG_FILE: &'static str = ".crustasync";
 
     async fn write(&self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()>;
@@ -64,3 +119,5 @@ pub trait FileSystem {
         Ok(tree)
     }
 }
+
+// endregion

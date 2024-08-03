@@ -1,6 +1,7 @@
 mod crustasyncfs;
 mod diff;
 
+use crate::diff::Task;
 use crustasyncfs::base::{FileSystem, Node};
 use crustasyncfs::local::LocalFileSystem;
 use tokio::io;
@@ -25,27 +26,33 @@ use tokio::io;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let local_fs = LocalFileSystem::new(".").await?;
-    local_fs.sync_fs_to_file().await?;
+    let foo_fs = LocalFileSystem::new("foo").await?;
+    let foo_tree = foo_fs.build_tree().await?;
+    // print_tree(&foo_tree);
 
-    let root = local_fs.build_tree().await?;
-    print_tree(&root);
+    let bar_fs = LocalFileSystem::new("bar").await?;
+    let bar_tree = bar_fs.build_tree().await?;
 
-    let root = local_fs.read_fs_from_file().await?;
-    print_tree(&root);
+    let task_queues = diff::build_task_queue(&foo_tree, &bar_tree);
+    print_task_queues(task_queues);
 
-    local_fs.mkdir("new_folder/net/www".to_string()).await?;
-    local_fs
-        .write("new_folder/net/somefile", "this is a text")
-        .await?;
-    let content = local_fs.read("new_folder/net/somefile").await?;
-    let content = String::from_utf8(content).unwrap();
-    println!(">>> CONTENT: {content}");
     return Ok(());
 }
 
+fn print_task_queues(queues: Vec<Vec<Task>>) {
+    for (i, queue) in queues.iter().enumerate() {
+        println!("PRIORITY QUEUE {i}:");
+        for task in queue {
+            println!(" {:?}", task)
+        }
+        println!("\n");
+    }
+}
+
 fn print_tree(node: &Node) {
-    print_node_with_level(node, 0)
+    println!("TREE:");
+    print_node_with_level(node, 0);
+    print!("\n");
 }
 
 fn print_node_with_level(node: &Node, level: usize) {
