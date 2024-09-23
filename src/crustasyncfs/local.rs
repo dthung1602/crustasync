@@ -107,7 +107,7 @@ impl LocalFileSystem {
             }
 
             let mut hasher = Sha1::new();
-            hasher.update("DIRECTORY");  // To make sure empty dir != empty file
+            hasher.update("DIRECTORY"); // To make sure empty dir != empty file
 
             children.sort_by_key(|node| node.name.clone().to_lowercase());
 
@@ -130,7 +130,7 @@ impl LocalFileSystem {
         // TODO read file as stream
         let content = fs::read(abs_path).await?;
         let mut hasher = Sha1::new();
-        hasher.update("FILE");   // To make sure empty dir != empty file
+        hasher.update("FILE"); // To make sure empty dir != empty file
         hasher.update(content);
         let content_hash = hasher.finalize().into();
 
