@@ -1,11 +1,11 @@
-- [ ] local
-  - [ ] build tree
-  - [ ] get file
-  - [ ] create file
+- [x] local
+  - [x] build tree
+  - [x] get file
+  - [x] create file
 
 - [ ] core
-  - [ ] move things to abstract interface/object
-  - [ ] diff algorithm
+  - [x] move things to abstract interface/object
+  - [x] diff algorithm
   - [ ] add cli options
   - [ ] build lib
 

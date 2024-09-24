@@ -1,8 +1,8 @@
 use futures::future::{try_join_all, Future};
 use log::{error, info};
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
-use std::fmt::{Debug, Display};
+use std::collections::HashMap;
+use std::fmt::Debug;
 use std::ops::Add;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -19,11 +19,15 @@ pub enum Task {
     Delete { path: PathBuf },
 }
 
-fn build_content_hash_table(tree: &Node) -> HashMap<ContentHash, &Node> {
-    // TODO files with same content
-    let mut table = HashMap::new();
+// Build a map from content hash to a vector of nodes with that content
+fn build_content_hash_table(tree: &Node) -> HashMap<ContentHash, Vec<&Node>> {
+    let mut table: HashMap<ContentHash, Vec<&Node>> = HashMap::new();
     for node in tree {
-        table.insert(node.content_hash, node);
+        if let Some(nodes) = table.get_mut(&node.content_hash) {
+            nodes.push(node);
+        } else {
+            table.insert(node.content_hash, vec![node]);
+        }
     }
     table
 }
@@ -62,21 +66,26 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
     // Move file & directories + delete files
     for dst_node in dst_tree {
         // src and dst share the same file/directory
-        if let Some(src_node) = src_content_table.remove(&dst_node.content_hash) {
-            // only the path is different -> move
-            if dst_node.path != src_node.path {
+        if let Some(src_nodes) = src_content_table.get_mut(&dst_node.content_hash) {
+            if src_nodes.len() > 0 {
+                // if any of the src_nodes has the same path -> dont do anything
+                if let Some(idx) = src_nodes.iter().position(|n| n.path == dst_node.path) {
+                    src_nodes.remove(idx);
+                    continue;
+                }
+                // otherwise, move 1 node in the list
                 to_move.insert(
                     dst_node.path.clone(),
                     (
                         Task::Move {
                             from: dst_node.path.clone(),
-                            to: src_node.path.clone(),
+                            to: src_nodes.pop().unwrap().path.clone(),
                         },
                         dst_node.is_file(),
                     ),
                 );
+                continue;
             }
-            continue;
         };
 
         // content not found in src tree
@@ -111,58 +120,60 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
     }
 
     // Create dir & Upload new files
-    for new in src_content_table.values() {
-        if new.is_file() {
-            if let Some((del_task, is_dst_node_file)) = to_del.get(&new.path) {
-                if *is_dst_node_file {
-                    // dst path is file
-                    // newly uploaded file will override, no need to delete
-                    to_del.remove(&new.path);
-                } else if let Task::Delete { path } = del_task {
-                    // check if the dir to-be-overwritten have any to-be-moved descendant
-                    // move the descendants to tmp files, then edit their move tasks
-                    //
-                    to_move.iter_mut().for_each(|(k, (task, _))| {
-                        if !k.starts_with(path) {
-                            return;
-                        }
-                        let uuid = Uuid::new_v4().to_string();
-                        let temp_file_name = String::from(".crustasync-").add(&uuid);
-                        let temp_path_buf = PathBuf::from(temp_file_name);
-                        if let Task::Move { from, to } = task {
-                            println!(">> {:?} {:?}", from, to);
-                            queue_0.push(Task::Move {
-                                from: from.clone(),
-                                to: temp_path_buf.clone(),
-                            });
-                            from.clear();
-                            from.push(temp_path_buf);
-                        }
-                    });
-                    queue_1.push(Task::Delete { path: path.clone() });
-                    to_del.remove(&new.path);
+    for new_nodes in src_content_table.values() {
+        for new in new_nodes {
+            if new.is_file() {
+                if let Some((del_task, is_dst_node_file)) = to_del.get(&new.path) {
+                    if *is_dst_node_file {
+                        // dst path is file
+                        // newly uploaded file will override, no need to delete
+                        to_del.remove(&new.path);
+                    } else if let Task::Delete { path } = del_task {
+                        // check if the dir to-be-overwritten have any to-be-moved descendant
+                        // move the descendants to tmp files, then edit their move tasks
+                        //
+                        to_move.iter_mut().for_each(|(k, (task, _))| {
+                            if !k.starts_with(path) {
+                                return;
+                            }
+                            let uuid = Uuid::new_v4().to_string();
+                            let temp_file_name = String::from(".crustasync-").add(&uuid);
+                            let temp_path_buf = PathBuf::from(temp_file_name);
+                            if let Task::Move { from, to } = task {
+                                println!(">> {:?} {:?}", from, to);
+                                queue_0.push(Task::Move {
+                                    from: from.clone(),
+                                    to: temp_path_buf.clone(),
+                                });
+                                from.clear();
+                                from.push(temp_path_buf);
+                            }
+                        });
+                        queue_1.push(Task::Delete { path: path.clone() });
+                        to_del.remove(&new.path);
+                    }
                 }
-            }
-            queue_4.push(Task::Upload {
-                path: new.path.clone(),
-            });
-        } else {
-            if let Some((_del_task, is_dst_node_file)) = to_del.get(&new.path) {
-                // if the path is already a dir, no need to del current one then create new one
-                if !is_dst_node_file {
-                    to_del.remove(&new.path);
-                    continue;
-                }
-                // if the path is file, need to delete it with higher priority
-                to_del.remove(&new.path);
-                queue_1.push(Task::Delete {
-                    path: new.path.clone(),
-                })
-            }
-            if new.path != empty_path {
-                queue_2.push(Task::CreateDir {
+                queue_4.push(Task::Upload {
                     path: new.path.clone(),
                 });
+            } else {
+                if let Some((_del_task, is_dst_node_file)) = to_del.get(&new.path) {
+                    // if the path is already a dir, no need to del current one then create new one
+                    if !is_dst_node_file {
+                        to_del.remove(&new.path);
+                        continue;
+                    }
+                    // if the path is file, need to delete it with higher priority
+                    to_del.remove(&new.path);
+                    queue_1.push(Task::Delete {
+                        path: new.path.clone(),
+                    })
+                }
+                if new.path != empty_path {
+                    queue_2.push(Task::CreateDir {
+                        path: new.path.clone(),
+                    });
+                }
             }
         }
     }
