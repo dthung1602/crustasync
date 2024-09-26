@@ -1,5 +1,5 @@
 use futures::future::{try_join_all, Future};
-use log::{error, info};
+use log::{debug, error, info};
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -44,6 +44,8 @@ fn build_path_hash_table(tree: &Node) -> HashMap<PathBuf, &Node> {
 // The tasks are divided into priority classes
 // All tasks of the same priority must be completed before processing lower priority tasks
 pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
+    debug!("Start building tasks");
+
     let empty_path = Path::new("");
 
     // ---> TODO exclude .crustasync file?
@@ -64,11 +66,12 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
     let mut to_del = HashMap::new();
 
     // Move file & directories + delete files
+    debug!("Finding files & dirs to move and delete");
     for dst_node in dst_tree {
         // src and dst share the same file/directory
         if let Some(src_nodes) = src_content_table.get_mut(&dst_node.content_hash) {
             if src_nodes.len() > 0 {
-                // if any of the src_nodes has the same path -> dont do anything
+                // if any of the src_nodes has the same path -> don't do anything
                 if let Some(idx) = src_nodes.iter().position(|n| n.path == dst_node.path) {
                     src_nodes.remove(idx);
                     continue;
@@ -120,6 +123,7 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
     }
 
     // Create dir & Upload new files
+    debug!("Finding new dir to create & new file to write");
     for new_nodes in src_content_table.values() {
         for new in new_nodes {
             if new.is_file() {
@@ -139,8 +143,7 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
                             let uuid = Uuid::new_v4().to_string();
                             let temp_file_name = String::from(".crustasync-").add(&uuid);
                             let temp_path_buf = PathBuf::from(temp_file_name);
-                            if let Task::Move { from, to } = task {
-                                println!(">> {:?} {:?}", from, to);
+                            if let Task::Move { from, to: _ } = task {
                                 queue_0.push(Task::Move {
                                     from: from.clone(),
                                     to: temp_path_buf.clone(),
@@ -177,6 +180,8 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
             }
         }
     }
+
+    debug!("Sort and dedup tasks");
 
     // dedup
     queue_0 = dedup_move_tasks(queue_0);
@@ -230,7 +235,16 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
         Reverse(s)
     });
 
-    vec![queue_0, queue_1, queue_2, queue_3, queue_4, queue_5]
+    let result = vec![queue_0, queue_1, queue_2, queue_3, queue_4, queue_5];
+
+    let total = result
+        .iter()
+        .map(|q| q.len())
+        .reduce(|a, b| a + b)
+        .unwrap_or(0);
+    debug!("Build tasks done. Total {} task(s)", total);
+
+    result
 }
 
 fn dedup_move_tasks(tasks: Vec<Task>) -> Vec<Task> {
@@ -348,6 +362,7 @@ pub async fn process_tasks(
     dst_fs: impl FileSystem,
     queues: &Vec<Vec<Task>>,
 ) -> io::Result<()> {
+    info!("Start processing tasks");
     for queue in queues {
         let futures = queue.iter().map(|task: &Task| {
             let dst_fs = dst_fs.clone();
@@ -361,7 +376,8 @@ pub async fn process_tasks(
             };
             box_future
         });
-        try_join_all(futures).await?;
+        try_join_all(futures).await.expect("Process tasks failed");
     }
+    info!("Processing tasks done");
     Ok(())
 }

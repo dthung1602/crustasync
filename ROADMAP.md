@@ -3,11 +3,11 @@
   - [x] get file
   - [x] create file
 
-- [ ] core
+- [x] core
   - [x] move things to abstract interface/object
   - [x] diff algorithm
-  - [ ] add cli options
-  - [ ] build lib
+  - [x] add cli options
+  - [x] build lib
 
 - [ ] google drive
   - [ ] login
