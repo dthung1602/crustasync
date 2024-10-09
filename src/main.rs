@@ -1,7 +1,10 @@
 mod cli;
 mod crustasyncfs;
 mod diff;
+mod oauth;
 mod utils;
+
+use std::cmp::{Ordering, PartialOrd};
 
 use clap::Parser;
 use cli::LogLevel;
@@ -9,11 +12,10 @@ use crustasyncfs::base::FileSystem;
 use crustasyncfs::local::LocalFileSystem;
 use hex;
 use log::{debug, error, info, warn};
-use std::cmp::{Ordering, PartialOrd};
 use tokio::io;
 
 #[tokio::main]
-async fn main() -> io::Result<()> {
+async fn main() -> anyhow::Result<()> {
     let option = cli::CLIOption::parse();
 
     env_logger::Builder::new()

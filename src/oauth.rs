@@ -1,34 +1,35 @@
+use std::collections::HashSet;
+use std::ops::Add;
+use std::path::Path;
+use std::process::Stdio;
+
 use anyhow::anyhow;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use chrono::{DateTime, TimeDelta, Utc};
 use itertools::Itertools;
-use log::{debug, info};
+use log::debug;
 use rand;
 use rand::RngCore;
 use reqwest;
-use sha2::digest::Output;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::borrow::Cow;
-use std::collections::HashSet;
-use std::ops::Add;
-use std::process::Stdio;
+use tokio::fs;
 use tokio::io;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
-use url::form_urlencoded::ParseIntoOwned;
 use url::Url;
 
 const OAUTH_STATE_LEN: usize = 128;
 const OAUTH_PKCE_LEN: usize = 32;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TokenType {
-    Bearer,
+    Bearer, // for now support only this type
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthToken {
     pub access_token: String,
     pub refresh_token: String,
@@ -36,6 +37,61 @@ pub struct AuthToken {
     pub token_type: TokenType,
     pub scope: HashSet<String>,
     pub id_token: String,
+}
+
+impl AuthToken {
+    pub fn is_expired(&self) -> bool {
+        self.expires_at < Utc::now()
+    }
+
+    pub async fn from_response(res: reqwest::Response) -> anyhow::Result<Self> {
+        let data: serde_json::Value = res.json().await?;
+        debug!("Got response: {:#?}", data);
+
+        let expires_in = data.get("expires_in").unwrap().as_i64().unwrap();
+        let expires_at = Utc::now().add(TimeDelta::seconds(expires_in));
+
+        let scope: HashSet<String> = data
+            .get("access_token")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .split(' ')
+            .map(|s| s.to_string())
+            .collect();
+
+        let token = AuthToken {
+            access_token: data
+                .get("access_token")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string(),
+            refresh_token: data
+                .get("refresh_token")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string(),
+            expires_at,
+            token_type: TokenType::Bearer,
+            scope,
+            id_token: data.get("id_token").unwrap().as_str().unwrap().to_string(),
+        };
+        Ok(token)
+    }
+
+    pub async fn from_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let data = String::from_utf8(fs::read(path).await?)?;
+        let token: AuthToken = serde_json::from_str(data.as_str())?;
+        Ok(token)
+    }
+
+    pub async fn to_file(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+        let data = serde_json::to_string(self)?;
+        fs::write(path, data).await?;
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -59,8 +115,6 @@ impl OAuthPublicClient {
         auth_url: Url,
         token_url: Url,
     ) -> anyhow::Result<Self> {
-        let pkce = Self::generate_random_str(OAUTH_PKCE_LEN);
-        info!(">> PKCE: {}", pkce);
         Ok(OAuthPublicClient {
             client_id: client_id.to_string(),
             client_secret: client_secret.to_string(),
@@ -68,7 +122,7 @@ impl OAuthPublicClient {
             token_url,
             scopes: HashSet::new(),
             state: Self::generate_random_str(OAUTH_STATE_LEN),
-            pkce,
+            pkce: Self::generate_random_str(OAUTH_PKCE_LEN),
             auth_code: None,
             tcp_listener: None,
             localhost_redirect_port: 0,
@@ -79,7 +133,6 @@ impl OAuthPublicClient {
         let mut random_gen = rand::thread_rng();
         let mut buf = vec![0; len];
         random_gen.fill_bytes(&mut buf);
-        info!(">> Generating random string {:?}", buf);
         URL_SAFE_NO_PAD.encode(&buf).to_string()
     }
 
@@ -88,7 +141,17 @@ impl OAuthPublicClient {
         self
     }
 
-    pub async fn start_redirect_listening(&mut self) -> anyhow::Result<()> {
+    pub async fn new_auth_token(&mut self) -> anyhow::Result<AuthToken> {
+        debug!("Start creating new auth token");
+        self.start_redirect_listening().await?;
+        self.open_auth_url_in_browser()?;
+        self.wait_for_auth_code().await?;
+        let token = self.exchange_code().await?;
+        debug!("Got token: {:?}", token);
+        Ok(token)
+    }
+
+    async fn start_redirect_listening(&mut self) -> anyhow::Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         self.localhost_redirect_port = listener.local_addr()?.port();
         self.tcp_listener = Some(listener);
@@ -99,9 +162,10 @@ impl OAuthPublicClient {
         Ok(())
     }
 
-    pub fn open_auth_url_in_browser(&self) -> anyhow::Result<()> {
+    fn open_auth_url_in_browser(&self) -> anyhow::Result<()> {
         let full_auth_url = self.full_auth_url().to_string();
         debug!("Opening auth URL: {}", full_auth_url);
+        // TODO support window
         Command::new("xdg-open")
             .arg(full_auth_url)
             .stderr(Stdio::null())
@@ -133,18 +197,16 @@ impl OAuthPublicClient {
         hasher.update(&self.pkce.as_bytes());
         let result = hasher.finalize();
         let res = URL_SAFE_NO_PAD.encode(&result);
-        info!(">> PKCE hash {}", res);
         res
     }
 
-    pub async fn wait_for_auth_code(&mut self) -> anyhow::Result<()> {
+    async fn wait_for_auth_code(&mut self) -> anyhow::Result<()> {
         debug!("Waiting for auth code");
 
         let (mut stream, _) = self.tcp_listener.as_ref().unwrap().accept().await?;
 
         let buf_reader = io::BufReader::new(&mut stream);
         let first_line = buf_reader.lines().next_line().await?.unwrap();
-        debug!("Get first line req: {}", first_line);
 
         match self.parse_auth_code(&first_line) {
             Ok(auth_code) => {
@@ -211,7 +273,7 @@ impl OAuthPublicClient {
         Ok(())
     }
 
-    pub async fn exchange_code(&self) -> anyhow::Result<AuthToken> {
+    async fn exchange_code(&self) -> anyhow::Result<AuthToken> {
         let auth_code = self.auth_code.as_ref().unwrap();
         let params = [
             ("client_id", &self.client_id),
@@ -237,30 +299,10 @@ impl OAuthPublicClient {
             ));
         }
 
-        let data: serde_json::Value = res.json().await?;
-        debug!("Got response: {:#?}", data);
+        Ok(AuthToken::from_response(res).await?)
+    }
 
-        let expires_in = data.get("expires_in").unwrap().as_i64().unwrap();
-        let expires_at = Utc::now().add(TimeDelta::seconds(expires_in));
-
-        let token = AuthToken {
-            access_token: data
-                .get("access_token")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_string(),
-            refresh_token: data
-                .get("refresh_token")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_string(),
-            expires_at,
-            token_type: TokenType::Bearer,
-            scope: self.scopes.clone(),
-            id_token: data.get("id_token").unwrap().as_str().unwrap().to_string(),
-        };
-        Ok(token)
+    pub async fn refresh_token(&mut self, token: &mut AuthToken) -> anyhow::Result<()> {
+        todo!()
     }
 }

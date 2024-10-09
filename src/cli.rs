@@ -1,7 +1,13 @@
-use crate::enum_str;
+use std::env;
+use std::ffi::OsString;
+use std::path::PathBuf;
+use std::str::FromStr;
+
 use clap::{Parser, ValueEnum};
 use log::LevelFilter;
-use std::str::FromStr;
+use serde_json;
+
+use crate::enum_str;
 
 enum_str! {
     #[derive(ValueEnum, Debug, Clone, PartialOrd, PartialEq)]
@@ -19,6 +25,12 @@ impl LogLevel {
     }
 }
 
+fn default_cfg_path() -> OsString {
+    // TODO support window
+    let path = PathBuf::from_iter([env::var("HOME").unwrap().as_str(), ".config/crustasync"]);
+    path.into_os_string()
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct CLIOption {
@@ -33,4 +45,7 @@ pub struct CLIOption {
 
     #[arg(long, value_enum, default_value = "info")]
     pub log_level: LogLevel,
+
+    #[arg(long, short, default_value = default_cfg_path())]
+    pub config_dir: PathBuf,
 }

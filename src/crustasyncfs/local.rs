@@ -88,7 +88,7 @@ impl LocalFileSystem {
         is_root: bool,
     ) -> io::Result<Node> {
         let meta = fs::metadata(&abs_path).await?;
-        let updated_at = DateTime::from(meta.modified().unwrap());
+        let updated_at = DateTime::from(meta.modified()?);
         let name = String::from(abs_path.as_ref().file_name().unwrap().to_str().unwrap());
         let path = if is_root {
             PathBuf::from("")
