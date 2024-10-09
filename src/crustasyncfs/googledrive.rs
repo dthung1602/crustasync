@@ -20,7 +20,7 @@ const CONFIG_FILE_NAME: &str = "google_drive.json";
 
 #[derive(Debug, Clone)]
 pub struct GoogleDriveFileSystem {
-    auth_token: AuthToken,
+    pub auth_token: AuthToken,
 }
 
 impl GoogleDriveFileSystem {
@@ -62,6 +62,14 @@ impl GoogleDriveFileSystem {
     async fn save_token(token: &AuthToken, path: impl AsRef<Path> + Debug) -> Result<()> {
         info!("Saving token to {:?}", path);
         token.to_file(path).await?;
+        Ok(())
+    }
+    
+    // TODO for debug only
+    pub async fn refresh(&mut self) -> Result<()> {
+        info!("Refreshing token");
+        let token = Self::auth_client()?.refresh_token(&mut self.auth_token).await?;
+        self.auth_token = token;
         Ok(())
     }
 }

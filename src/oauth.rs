@@ -44,7 +44,7 @@ impl AuthToken {
         self.expires_at < Utc::now()
     }
 
-    pub async fn from_response(res: reqwest::Response) -> anyhow::Result<Self> {
+    pub async fn from_response(res: reqwest::Response, refresh_token: Option<String>) -> anyhow::Result<Self> {
         let data: serde_json::Value = res.json().await?;
         debug!("Got response: {:#?}", data);
 
@@ -60,19 +60,14 @@ impl AuthToken {
             .map(|s| s.to_string())
             .collect();
 
+        let refresh_token = match data.get("refresh_token") {
+            Some(refresh_token) => refresh_token.to_string(),
+            None => refresh_token.expect("No refresh token found"),
+        };
+
         let token = AuthToken {
-            access_token: data
-                .get("access_token")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_string(),
-            refresh_token: data
-                .get("refresh_token")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_string(),
+            access_token: data.get("access_token").unwrap().to_string(),
+            refresh_token,
             expires_at,
             token_type: TokenType::Bearer,
             scope,
@@ -89,6 +84,7 @@ impl AuthToken {
 
     pub async fn to_file(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
         let data = serde_json::to_string(self)?;
+        fs::create_dir_all(path.as_ref().parent().unwrap()).await?;
         fs::write(path, data).await?;
         Ok(())
     }
@@ -210,7 +206,6 @@ impl OAuthPublicClient {
 
         match self.parse_auth_code(&first_line) {
             Ok(auth_code) => {
-                debug!("Auth code: {:?}", self.auth_code);
                 self.auth_code = Some(auth_code);
                 let resp = b"HTTP/1.1 200 OK\r\n\r\nSuccess! Please go back to CLI.\r\n".to_vec();
                 self.resp_and_close_http(stream, resp).await?;
@@ -274,16 +269,40 @@ impl OAuthPublicClient {
     }
 
     async fn exchange_code(&self) -> anyhow::Result<AuthToken> {
+        debug!("Exchanging code");
         let auth_code = self.auth_code.as_ref().unwrap();
         let params = [
-            ("client_id", &self.client_id),
-            ("code", &auth_code),
             ("grant_type", &"authorization_code".to_string()),
+            ("code", &auth_code),
             ("code_verifier", &self.pkce),
-            ("client_secret", &self.client_secret),
             ("redirect_uri", &self.redirect_uri()),
         ];
-        debug!("Exchanging code with params: {:?}", params);
+        self.req_auth_server(&params).await
+    }
+
+    pub async fn refresh_token(&mut self, token: &mut AuthToken) -> anyhow::Result<AuthToken> {
+        debug!("Refreshing token");
+        let params = [
+            ("grant_type", &"refresh_token".to_string()),
+            ("refresh_token", &token.refresh_token),
+        ];
+        self.req_auth_server(&params).await
+    }
+
+    async fn req_auth_server(&self, extra_params: &[(&str, &String)]) -> anyhow::Result<AuthToken> {
+        let mut params = vec![
+            ("client_id", &self.client_id),
+            ("client_secret", &self.client_secret),
+        ];
+        params.extend_from_slice(extra_params);
+        debug!("Making req to auth server with params: {:?}", params);
+
+        let refresh_token = extra_params.iter().find_map(|(k, v)| if k.eq(&"refresh_token") {
+            Some((**v).clone())
+        } else {
+            None
+        });
+
         let client = reqwest::Client::new();
         let res = client
             .post(self.token_url.clone())
@@ -299,10 +318,6 @@ impl OAuthPublicClient {
             ));
         }
 
-        Ok(AuthToken::from_response(res).await?)
-    }
-
-    pub async fn refresh_token(&mut self, token: &mut AuthToken) -> anyhow::Result<()> {
-        todo!()
+        Ok(AuthToken::from_response(res, refresh_token).await?)
     }
 }

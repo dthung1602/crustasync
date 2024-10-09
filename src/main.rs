@@ -10,6 +10,7 @@ use clap::Parser;
 use cli::LogLevel;
 use crustasyncfs::base::FileSystem;
 use crustasyncfs::local::LocalFileSystem;
+use crustasyncfs::googledrive::GoogleDriveFileSystem;
 use hex;
 use log::{debug, error, info, warn};
 use tokio::io;
@@ -25,7 +26,18 @@ async fn main() -> anyhow::Result<()> {
     if option.log_level <= LogLevel::INFO {
         utils::print_version();
     }
+    
+    let mut drivefs = GoogleDriveFileSystem::new(&option).await?;
+    
+    println!(">>> GET TOKEN: {:?}\n\n", drivefs.auth_token);
+    
+    drivefs.refresh().await?;
 
+    println!(">>> GET TOKEN: {:?}\n\n", drivefs.auth_token);
+    
+    return Ok(());
+    
+    
     info!("Building src directory tree");
     let src_fs = LocalFileSystem::new(option.src_dir).await?;
     let src_tree = src_fs.build_tree().await?;
