@@ -44,7 +44,10 @@ impl AuthToken {
         self.expires_at < Utc::now()
     }
 
-    pub async fn from_response(res: reqwest::Response, refresh_token: Option<String>) -> anyhow::Result<Self> {
+    pub async fn from_response(
+        res: reqwest::Response,
+        refresh_token: Option<String>,
+    ) -> anyhow::Result<Self> {
         let data: serde_json::Value = res.json().await?;
         debug!("Got response: {:#?}", data);
 
@@ -297,10 +300,12 @@ impl OAuthPublicClient {
         params.extend_from_slice(extra_params);
         debug!("Making req to auth server with params: {:?}", params);
 
-        let refresh_token = extra_params.iter().find_map(|(k, v)| if k.eq(&"refresh_token") {
-            Some((**v).clone())
-        } else {
-            None
+        let refresh_token = extra_params.iter().find_map(|(k, v)| {
+            if k.eq(&"refresh_token") {
+                Some((**v).clone())
+            } else {
+                None
+            }
         });
 
         let client = reqwest::Client::new();

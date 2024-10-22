@@ -5,9 +5,9 @@ use std::ops::Add;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
+use anyhow::{Result};
 use futures::future::{try_join_all, Future};
 use log::{debug, error, info};
-use tokio::io;
 use uuid::Uuid;
 
 use crate::crustasyncfs::base::{ContentHash, FileSystem, Node};
@@ -21,6 +21,7 @@ pub enum Task {
 }
 
 // Build a map from content hash to a vector of nodes with that content
+// TODO prefix file with ffff , dir with dddd
 fn build_content_hash_table(tree: &Node) -> HashMap<ContentHash, Vec<&Node>> {
     let mut table: HashMap<ContentHash, Vec<&Node>> = HashMap::new();
     for node in tree {
@@ -309,7 +310,7 @@ async fn process_move(
     fs: impl FileSystem,
     from: impl AsRef<Path> + Debug,
     to: impl AsRef<Path> + Debug,
-) -> io::Result<()> {
+) -> Result<()> {
     info!("Start moving from {:?} to {:?}", from, to);
     let res = fs.mv(&from, &to).await;
     if res.is_err() {
@@ -324,7 +325,7 @@ async fn process_upload(
     src_fs: impl FileSystem,
     dst_fs: impl FileSystem,
     path: impl AsRef<Path> + Debug,
-) -> io::Result<()> {
+) -> Result<()> {
     info!("Start uploading to {:?}", path);
     let content = src_fs.read(&path).await?;
     let res = dst_fs.write(&path, content).await;
@@ -336,7 +337,7 @@ async fn process_upload(
     res
 }
 
-async fn process_create_dir(fs: impl FileSystem, path: impl AsRef<Path> + Debug) -> io::Result<()> {
+async fn process_create_dir(fs: impl FileSystem, path: impl AsRef<Path> + Debug) -> Result<()> {
     info!("Start creating dir to {:?}", path);
     let res = fs.mkdir(&path).await;
     if res.is_err() {
@@ -347,7 +348,7 @@ async fn process_create_dir(fs: impl FileSystem, path: impl AsRef<Path> + Debug)
     res
 }
 
-async fn process_delete(fs: impl FileSystem, path: impl AsRef<Path> + Debug) -> io::Result<()> {
+async fn process_delete(fs: impl FileSystem, path: impl AsRef<Path> + Debug) -> Result<()> {
     info!("Start deleting {:?}", path);
     let res = fs.rm(&path).await;
     if res.is_err() {
@@ -362,12 +363,12 @@ pub async fn process_tasks(
     src_fs: impl FileSystem,
     dst_fs: impl FileSystem,
     queues: &Vec<Vec<Task>>,
-) -> io::Result<()> {
+) -> Result<()> {
     info!("Start processing tasks");
     for queue in queues {
         let futures = queue.iter().map(|task: &Task| {
             let dst_fs = dst_fs.clone();
-            let box_future: Pin<Box<dyn Future<Output = io::Result<()>>>> = match task {
+            let box_future: Pin<Box<dyn Future<Output = Result<()>>>> = match task {
                 Task::Move { from, to } => Box::pin(process_move(dst_fs, from.clone(), to.clone())),
                 Task::Upload { path } => {
                     Box::pin(process_upload(src_fs.clone(), dst_fs, path.clone()))
