@@ -1,10 +1,10 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json as serde_lib;
-use tokio::io;
 
 // ------------------------------
 // region Node
@@ -16,7 +16,8 @@ pub enum NodeType {
     Directory,
 }
 
-pub type ContentHash = [u8; 20];
+// SHA256 hash result is 32 bytes
+pub type ContentHash = [u8; 32];
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Node {
@@ -94,29 +95,29 @@ impl<'a> IntoIterator for &'a Node {
 pub trait FileSystem: Clone {
     const CRUSTASYNC_CONFIG_FILE: &'static str = ".crustasync";
 
-    async fn write(&self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> io::Result<()>;
+    async fn write(&self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()>;
 
-    async fn read(&self, path: impl AsRef<Path>) -> io::Result<Vec<u8>>;
+    async fn read(&self, path: impl AsRef<Path>) -> Result<Vec<u8>>;
 
-    async fn mkdir(&self, path: impl AsRef<Path>) -> io::Result<()>;
+    async fn mkdir(&self, path: impl AsRef<Path>) -> Result<()>;
 
-    async fn rm(&self, path: impl AsRef<Path>) -> io::Result<()>;
+    async fn rm(&self, path: impl AsRef<Path>) -> Result<()>;
 
-    async fn mv(&self, src: impl AsRef<Path>, dest: impl AsRef<Path>) -> io::Result<()>;
+    async fn mv(&self, src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<()>;
 
-    async fn build_tree(&self) -> io::Result<Node>;
+    async fn build_tree(&self) -> Result<Node>;
 
-    async fn sync_fs_to_file(&self) -> io::Result<()> {
+    async fn sync_fs_to_file(&self) -> Result<()> {
         let tree = self.build_tree().await?;
         let serialized = serde_lib::to_string(&tree)?.into_bytes();
         self.write(Self::CRUSTASYNC_CONFIG_FILE, serialized).await?;
         Ok(())
     }
 
-    async fn read_fs_from_file(&self) -> io::Result<Node> {
+    async fn read_fs_from_file(&self) -> Result<Node> {
         let content = self.read(Self::CRUSTASYNC_CONFIG_FILE).await?;
-        let json_str = String::from_utf8(content).unwrap();
-        let tree: Node = serde_lib::from_str(&json_str).unwrap();
+        let json_str = String::from_utf8(content)?;
+        let tree: Node = serde_lib::from_str(&json_str)?;
         Ok(tree)
     }
 }
