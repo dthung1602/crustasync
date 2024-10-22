@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
     let mut drivefs = GoogleDriveFileSystem::new(&option, "/bar").await?;
 
     let tree = drivefs.build_tree().await?;
-    
+
     utils::print_tree(&tree);
 
     return Ok(());

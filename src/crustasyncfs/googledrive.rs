@@ -11,7 +11,7 @@ use futures::join;
 use itertools::Itertools;
 use log::{debug, error, info};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
-use reqwest::{Client as ReqwestClient};
+use reqwest::Client as ReqwestClient;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use url::Url;
@@ -125,23 +125,26 @@ impl GoogleDriveFileSystem {
         if meta.is_dir() {
             let children = self.ls(directory_id).await?;
 
-            let futures: Vec<_> = children.into_iter().map(|gd_file| async {
-                if gd_file.is_dir() {
-                    Box::pin(self.build_node(&gd_file.id, &path, false)).await
-                } else {
-                    let child_path = path.join(&gd_file.name);
-                    let hash = gd_file.sha256_checksum.unwrap();
-                    let content_hash: ContentHash = hex::decode(hash)?.try_into().unwrap();
-                    Ok(Node {
-                        node_type: NodeType::File,
-                        name: gd_file.name,
-                        path: child_path,
-                        updated_at: gd_file.modified_time,
-                        content_hash,
-                        children: vec![],
-                    })
-                }
-            }).collect();
+            let futures: Vec<_> = children
+                .into_iter()
+                .map(|gd_file| async {
+                    if gd_file.is_dir() {
+                        Box::pin(self.build_node(&gd_file.id, &path, false)).await
+                    } else {
+                        let child_path = path.join(&gd_file.name);
+                        let hash = gd_file.sha256_checksum.unwrap();
+                        let content_hash: ContentHash = hex::decode(hash)?.try_into().unwrap();
+                        Ok(Node {
+                            node_type: NodeType::File,
+                            name: gd_file.name,
+                            path: child_path,
+                            updated_at: gd_file.modified_time,
+                            content_hash,
+                            children: vec![],
+                        })
+                    }
+                })
+                .collect();
 
             let mut children = vec![];
             for res in join_all(futures).await {
@@ -207,7 +210,8 @@ impl GoogleDriveFileSystem {
             ("q", Self::gd_query(directory_id, None::<&str>)),
             (
                 "fields",
-                "nextPageToken, files(id, name, mimeType, modifiedTime, sha256Checksum)".to_string(),
+                "nextPageToken, files(id, name, mimeType, modifiedTime, sha256Checksum)"
+                    .to_string(),
             ),
         ];
 
@@ -237,8 +241,11 @@ impl GoogleDriveFileSystem {
             .send()
             .await?;
         debug!("Got response status: {}", res.status());
-        
-        Ok(res.json().await.expect("Cannot deserialize JSON response to /files"))
+
+        Ok(res
+            .json()
+            .await
+            .expect("Cannot deserialize JSON response to /files"))
     }
 
     fn gd_query(parent_id: impl ToString, file_name: Option<impl ToString>) -> String {
@@ -259,9 +266,7 @@ impl GoogleDriveFileSystem {
 
     #[inline]
     fn escape_gd_query(s: impl ToString) -> String {
-        s.to_string()
-        .replace("\\", "\\\\")
-        .replace("'", "\\'")
+        s.to_string().replace("\\", "\\\\").replace("'", "\\'")
     }
 
     async fn get_root_dir_id(&self) -> Result<String> {
@@ -269,7 +274,9 @@ impl GoogleDriveFileSystem {
         let mut parent_dir_id = "root".to_string();
         for dir_name in self.root_dir.iter() {
             if dir_name != root_dir {
-                parent_dir_id = self.get_child_dir_id(&parent_dir_id, dir_name.to_str().unwrap()).await?;
+                parent_dir_id = self
+                    .get_child_dir_id(&parent_dir_id, dir_name.to_str().unwrap())
+                    .await?;
             };
         }
 
@@ -282,7 +289,8 @@ impl GoogleDriveFileSystem {
             ("q", Self::gd_query(parent_dir_id, Some(child_name))),
             (
                 "fields",
-                "nextPageToken, files(id, name, mimeType, modifiedTime, sha256Checksum)".to_string(),
+                "nextPageToken, files(id, name, mimeType, modifiedTime, sha256Checksum)"
+                    .to_string(),
             ),
         ];
 

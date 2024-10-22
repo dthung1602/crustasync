@@ -5,7 +5,7 @@ use std::ops::Add;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use anyhow::{Result};
+use anyhow::Result;
 use futures::future::{try_join_all, Future};
 use log::{debug, error, info};
 use uuid::Uuid;
