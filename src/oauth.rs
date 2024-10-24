@@ -55,7 +55,7 @@ impl AuthToken {
         let expires_at = Utc::now().add(TimeDelta::seconds(expires_in));
 
         let scope: HashSet<String> = data
-            .get("access_token")
+            .get("scope")
             .unwrap()
             .as_str()
             .unwrap()
@@ -64,12 +64,17 @@ impl AuthToken {
             .collect();
 
         let refresh_token = match data.get("refresh_token") {
-            Some(refresh_token) => refresh_token.to_string(),
+            Some(refresh_token) => refresh_token.as_str().unwrap().to_string(),
             None => refresh_token.expect("No refresh token found"),
         };
 
         let token = AuthToken {
-            access_token: data.get("access_token").unwrap().to_string(),
+            access_token: data
+                .get("access_token")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string(),
             refresh_token,
             expires_at,
             token_type: TokenType::Bearer,

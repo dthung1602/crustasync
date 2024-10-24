@@ -109,7 +109,7 @@ impl GoogleDriveFileSystem {
 
             let futures: Vec<_> = children
                 .into_iter()
-                .filter(|gd_file| is_root && gd_file.name == Self::CRUSTASYNC_CONFIG_FILE)
+                .filter(|gd_file| !(is_root && gd_file.name == Self::CRUSTASYNC_CONFIG_FILE))
                 .map(|gd_file| async {
                     if gd_file.is_dir() {
                         Box::pin(self.build_node(&gd_file.id, &path, false)).await
