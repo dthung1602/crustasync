@@ -26,7 +26,7 @@ pub struct Node {
     pub path: PathBuf,
     pub updated_at: DateTime<Utc>,
     pub content_hash: ContentHash,
-    pub children: Vec<Node>, // TODO box node?
+    pub children: Vec<Node>,
 }
 
 impl Node {

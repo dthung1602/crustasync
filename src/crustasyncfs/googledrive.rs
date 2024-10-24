@@ -1,15 +1,12 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fmt::Debug;
-use std::future::Future;
 use std::path;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
-use futures::join;
-use itertools::Itertools;
-use log::{debug, error, info};
+use log::{debug, info};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Client as ReqwestClient;
 use serde::Deserialize;
@@ -87,25 +84,10 @@ impl GoogleDriveFileSystem {
     }
 
     async fn auth_header(&self) -> Result<HeaderMap> {
-        // TODO self.refresh().await?;
         let mut headers = HeaderMap::new();
         let bearer = format!("Bearer {}", self.auth_token.access_token);
         headers.insert(AUTHORIZATION, HeaderValue::from_str(&bearer)?);
         Ok(headers)
-    }
-
-    // TODO pub for debug only
-    pub async fn refresh(&mut self) -> Result<bool> {
-        if self.auth_token.is_expired() {
-            info!("Refreshing token");
-            let token = Self::auth_client()?
-                .refresh_token(&mut self.auth_token)
-                .await?;
-            self.auth_token = token;
-            return Ok(true);
-        }
-        info!("Token is fresh");
-        Ok(false)
     }
 
     async fn build_node(
@@ -127,6 +109,7 @@ impl GoogleDriveFileSystem {
 
             let futures: Vec<_> = children
                 .into_iter()
+                .filter(|gd_file| is_root && gd_file.name == Self::CRUSTASYNC_CONFIG_FILE)
                 .map(|gd_file| async {
                     if gd_file.is_dir() {
                         Box::pin(self.build_node(&gd_file.id, &path, false)).await
@@ -200,7 +183,7 @@ impl GoogleDriveFileSystem {
             .await?)
     }
 
-    pub async fn ls(&self, directory_id: &str) -> Result<Vec<GDFile>> {
+    async fn ls(&self, directory_id: &str) -> Result<Vec<GDFile>> {
         debug!("Listing files drives in {directory_id}");
 
         let headers = self.auth_header().await.expect("Cannot build headers");
@@ -341,8 +324,7 @@ impl FileSystem for GoogleDriveFileSystem {
 // https://developers.google.com/drive/api/reference/rest/v2/files/list
 
 #[derive(Debug, Deserialize)]
-// TODO pub is temp
-pub struct GDFile {
+struct GDFile {
     id: String,
     name: String,
     #[serde(rename = "mimeType")]

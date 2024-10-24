@@ -20,15 +20,29 @@ pub enum Task {
     Delete { path: PathBuf },
 }
 
-// Build a map from content hash to a vector of nodes with that content
-// TODO prefix file with ffff , dir with dddd
-fn build_content_hash_table(tree: &Node) -> HashMap<ContentHash, Vec<&Node>> {
+impl Node {
+    // Prefix file with ffff, dir with dddd
+    // This is to distinguish between empty files and empty dirs
+    pub fn node_hash(&self) -> ContentHash {
+        let mut hash = self.content_hash.clone();
+        if self.is_file() {
+            hash[0..4].fill('f' as u8);
+        } else {
+            hash[0..4].fill('d' as u8);
+        }
+        hash
+    }
+}
+
+// Build a map from node hash to a vector of nodes with that content
+fn build_node_hash_table(tree: &Node) -> HashMap<ContentHash, Vec<&Node>> {
     let mut table: HashMap<ContentHash, Vec<&Node>> = HashMap::new();
     for node in tree {
-        if let Some(nodes) = table.get_mut(&node.content_hash) {
+        let node_hash = node.node_hash();
+        if let Some(nodes) = table.get_mut(&node_hash) {
             nodes.push(node);
         } else {
-            table.insert(node.content_hash, vec![node]);
+            table.insert(node_hash, vec![node]);
         }
     }
     table
@@ -50,7 +64,6 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
 
     let empty_path = Path::new("");
 
-    // ---> TODO exclude .crustasync file?
     // Create new dir must happen before upload & move
     // Move must happen before delete dir
     let mut queue_0 = vec![]; // move to tmp files
@@ -60,7 +73,7 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
     let mut queue_4 = vec![]; // upload
     let mut queue_5 = vec![]; // delete
 
-    let mut src_content_table = build_content_hash_table(src_tree);
+    let mut src_content_table = build_node_hash_table(src_tree);
     // let dst_path_table = build_path_hash_table(&dst_tree);
     let src_path_table = build_path_hash_table(&src_tree);
 
@@ -71,7 +84,7 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
     debug!("Finding files & dirs to move and delete");
     for dst_node in dst_tree {
         // src and dst share the same file/directory
-        if let Some(src_nodes) = src_content_table.get_mut(&dst_node.content_hash) {
+        if let Some(src_nodes) = src_content_table.get_mut(&dst_node.node_hash()) {
             if src_nodes.len() > 0 {
                 // if any of the src_nodes has the same path -> don't do anything
                 if let Some(idx) = src_nodes.iter().position(|n| n.path == dst_node.path) {

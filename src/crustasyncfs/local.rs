@@ -102,6 +102,9 @@ impl LocalFileSystem {
             let mut children = vec![];
 
             while let Some(entry) = result.next_entry().await? {
+                if is_root && entry.file_name().to_str().unwrap() == Self::CRUSTASYNC_CONFIG_FILE {
+                    continue;
+                }
                 let entry_path = entry.path();
                 let node = Box::pin(self.build_node(entry_path, &path, false)).await?;
                 children.push(node);
