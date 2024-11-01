@@ -4,8 +4,8 @@ use anyhow::{anyhow, Result};
 use chrono::DateTime;
 use sha2::{Digest, Sha256};
 use tokio::fs;
-
-use crate::crustasyncfs::base::{FileSystem, Node, NodeType};
+use crate::pbts;
+use crate::crustasyncfs::base::{FileSystem, FileSystemId, Node, NodeType};
 
 #[derive(Debug, Clone)]
 pub struct LocalFileSystem {
@@ -13,8 +13,8 @@ pub struct LocalFileSystem {
 }
 
 impl FileSystem for LocalFileSystem {
-    async fn write(&self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()> {
-        let path_buf = self.abs_path(path);
+    async fn write(&self, fsid: &FileSystemId, content: impl AsRef<[u8]>) -> Result<()> {
+        let path_buf = self.abs_path(fsid);
         let parent = path_buf.parent().unwrap();
         fs::create_dir_all(parent).await?;
         fs::write(path_buf, content)
@@ -22,20 +22,20 @@ impl FileSystem for LocalFileSystem {
             .map_err(anyhow::Error::from)
     }
 
-    async fn read(&self, path: impl AsRef<Path>) -> Result<Vec<u8>> {
-        let path_buf = self.abs_path(path);
+    async fn read(&self, fsid: &FileSystemId) -> Result<Vec<u8>> {
+        let path_buf = self.abs_path(fsid);
         fs::read(path_buf).await.map_err(anyhow::Error::from)
     }
 
-    async fn mkdir(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path_buf = self.abs_path(path);
+    async fn mkdir(&self, fsid: &FileSystemId) -> Result<()> {
+        let path_buf = self.abs_path(fsid);
         fs::create_dir_all(path_buf)
             .await
             .map_err(anyhow::Error::from)
     }
 
-    async fn rm(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path_buf = self.abs_path(path);
+    async fn rm(&self, fsid: &FileSystemId) -> Result<()> {
+        let path_buf = self.abs_path(fsid);
         let meta = fs::metadata(&path_buf).await?;
         if meta.is_dir() {
             fs::remove_dir_all(&path_buf)
@@ -48,13 +48,14 @@ impl FileSystem for LocalFileSystem {
         }
     }
 
-    async fn mv(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
+    async fn mv(&self, from: &FileSystemId, to: &FileSystemId) -> Result<()> {
         fs::rename(self.abs_path(from), self.abs_path(to)).await?;
         Ok(())
     }
 
     async fn build_tree(&self) -> Result<Node> {
-        let root = self.build_node(&self.root_dir, "", true).await?;
+        let root_dir_string = pbts!(self.root_dir);
+        let root = self.build_node(&root_dir_string, &"".to_string(), true).await?;
 
         match root.node_type {
             NodeType::File => Err(anyhow!("root is not a directory")),
@@ -96,6 +97,9 @@ impl LocalFileSystem {
         } else {
             parent_path.as_ref().join(&name)
         };
+        
+        // for local file system, the path is the identifier
+        let fsid = pbts!(path);
 
         if meta.is_dir() {
             let mut result = fs::read_dir(abs_path).await?;
@@ -127,6 +131,7 @@ impl LocalFileSystem {
                 updated_at,
                 content_hash: hasher.finalize().into(),
                 children,
+                fsid,
             });
         }
 
@@ -143,6 +148,7 @@ impl LocalFileSystem {
             updated_at,
             content_hash,
             children: vec![],
+            fsid
         })
     }
 }

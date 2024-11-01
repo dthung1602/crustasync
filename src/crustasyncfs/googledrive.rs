@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 
 use crate::cli::CLIOption;
-use crate::crustasyncfs::base::{ContentHash, FileSystem, Node, NodeType};
+use crate::crustasyncfs::base::{ContentHash, FileSystem, FileSystemId, Node, NodeType};
 use crate::oauth::{AuthToken, OAuthPublicClient};
 
 // Google client id for public client
@@ -124,6 +124,7 @@ impl GoogleDriveFileSystem {
                             updated_at: gd_file.modified_time,
                             content_hash,
                             children: vec![],
+                            fsid: gd_file.id,
                         })
                     }
                 })
@@ -154,6 +155,7 @@ impl GoogleDriveFileSystem {
                 updated_at: meta.modified_time,
                 content_hash: hasher.finalize().into(),
                 children,
+                fsid: meta.id
             });
         }
 
@@ -166,6 +168,7 @@ impl GoogleDriveFileSystem {
             updated_at: meta.modified_time,
             content_hash,
             children: vec![],
+            fsid: meta.id
         })
     }
 
@@ -288,23 +291,23 @@ impl GoogleDriveFileSystem {
 }
 
 impl FileSystem for GoogleDriveFileSystem {
-    async fn write(&self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()> {
+    async fn write(&self, fsid: &FileSystemId, content: impl AsRef<[u8]>) -> Result<()> {
         todo!()
     }
 
-    async fn read(&self, path: impl AsRef<Path>) -> Result<Vec<u8>> {
+    async fn read(&self, fsid: &FileSystemId) -> Result<Vec<u8>> {
         todo!()
     }
 
-    async fn mkdir(&self, path: impl AsRef<Path>) -> Result<()> {
+    async fn mkdir(&self, fsid: &FileSystemId) -> Result<()> {
         todo!()
     }
 
-    async fn rm(&self, path: impl AsRef<Path>) -> Result<()> {
+    async fn rm(&self, fsid: &FileSystemId) -> Result<()> {
         todo!()
     }
 
-    async fn mv(&self, src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<()> {
+    async fn mv(&self, src: &FileSystemId, dest: &FileSystemId) -> Result<()> {
         todo!()
     }
 

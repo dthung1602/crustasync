@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-
+use std::string::ToString;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,8 @@ pub enum NodeType {
 // SHA256 hash result is 32 bytes
 pub type ContentHash = [u8; 32];
 
+pub type FileSystemId = String;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Node {
     pub node_type: NodeType,
@@ -27,6 +29,7 @@ pub struct Node {
     pub updated_at: DateTime<Utc>,
     pub content_hash: ContentHash,
     pub children: Vec<Node>,
+    pub fsid: FileSystemId, // a filesystem-dependent identifier used for read/write/rm operations 
 }
 
 impl Node {
@@ -95,27 +98,27 @@ impl<'a> IntoIterator for &'a Node {
 pub trait FileSystem: Clone {
     const CRUSTASYNC_CONFIG_FILE: &'static str = ".crustasync";
 
-    async fn write(&self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()>;
+    async fn write(&self, fsid: &FileSystemId, content: impl AsRef<[u8]>) -> Result<()>;
 
-    async fn read(&self, path: impl AsRef<Path>) -> Result<Vec<u8>>;
+    async fn read(&self, fsid: &FileSystemId) -> Result<Vec<u8>>;
 
-    async fn mkdir(&self, path: impl AsRef<Path>) -> Result<()>;
+    async fn mkdir(&self, fsid: &FileSystemId) -> Result<()>;
 
-    async fn rm(&self, path: impl AsRef<Path>) -> Result<()>;
+    async fn rm(&self, fsid: &FileSystemId) -> Result<()>;
 
-    async fn mv(&self, src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<()>;
+    async fn mv(&self, src: &FileSystemId, dest: &FileSystemId) -> Result<()>;
 
     async fn build_tree(&self) -> Result<Node>;
 
     async fn sync_fs_to_file(&self) -> Result<()> {
         let tree = self.build_tree().await?;
         let serialized = serde_lib::to_string(&tree)?.into_bytes();
-        self.write(Self::CRUSTASYNC_CONFIG_FILE, serialized).await?;
+        self.write(&Self::CRUSTASYNC_CONFIG_FILE.to_string(), serialized).await?;
         Ok(())
     }
 
     async fn read_fs_from_file(&self) -> Result<Node> {
-        let content = self.read(Self::CRUSTASYNC_CONFIG_FILE).await?;
+        let content = self.read(&Self::CRUSTASYNC_CONFIG_FILE.to_string()).await?;
         let json_str = String::from_utf8(content)?;
         let tree: Node = serde_lib::from_str(&json_str)?;
         Ok(tree)

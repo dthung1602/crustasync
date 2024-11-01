@@ -5,7 +5,6 @@ use std::str::FromStr;
 
 use clap::{Parser, ValueEnum};
 use log::LevelFilter;
-use serde_json;
 
 use crate::enum_str;
 

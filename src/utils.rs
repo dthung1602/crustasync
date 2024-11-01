@@ -127,4 +127,12 @@ macro_rules! enum_str {
     };
 }
 
+// shortcut cut to convert from PathBuf to String
+#[macro_export]
+macro_rules! pbts {
+    ($path_buf:expr) => {
+        $path_buf.clone().to_str().unwrap().to_string()
+    };
+}
+
 // endregion

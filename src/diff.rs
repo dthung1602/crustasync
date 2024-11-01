@@ -9,15 +9,15 @@ use anyhow::Result;
 use futures::future::{try_join_all, Future};
 use log::{debug, error, info};
 use uuid::Uuid;
-
-use crate::crustasyncfs::base::{ContentHash, FileSystem, Node};
+use crate::crustasyncfs::base::{ContentHash, FileSystem, FileSystemId, Node};
+use crate::pbts;
 
 #[derive(Clone, Debug)]
 pub enum Task {
-    Move { from: PathBuf, to: PathBuf },
+    Move { from: FileSystemId, to: PathBuf },
     Upload { path: PathBuf },
     CreateDir { path: PathBuf },
-    Delete { path: PathBuf },
+    Delete { path: FileSystemId },
 }
 
 impl Node {
@@ -321,8 +321,8 @@ fn dedup_del_tasks(tasks: Vec<Task>) -> Vec<Task> {
 
 async fn process_move(
     fs: impl FileSystem,
-    from: impl AsRef<Path> + Debug,
-    to: impl AsRef<Path> + Debug,
+    from: FileSystemId,
+    to: FileSystemId,
 ) -> Result<()> {
     info!("Start moving from {:?} to {:?}", from, to);
     let res = fs.mv(&from, &to).await;
@@ -337,7 +337,7 @@ async fn process_move(
 async fn process_upload(
     src_fs: impl FileSystem,
     dst_fs: impl FileSystem,
-    path: impl AsRef<Path> + Debug,
+    path: FileSystemId,
 ) -> Result<()> {
     info!("Start uploading to {:?}", path);
     let content = src_fs.read(&path).await?;
@@ -350,7 +350,7 @@ async fn process_upload(
     res
 }
 
-async fn process_create_dir(fs: impl FileSystem, path: impl AsRef<Path> + Debug) -> Result<()> {
+async fn process_create_dir(fs: impl FileSystem, path: FileSystemId) -> Result<()> {
     info!("Start creating dir to {:?}", path);
     let res = fs.mkdir(&path).await;
     if res.is_err() {
@@ -361,7 +361,7 @@ async fn process_create_dir(fs: impl FileSystem, path: impl AsRef<Path> + Debug)
     res
 }
 
-async fn process_delete(fs: impl FileSystem, path: impl AsRef<Path> + Debug) -> Result<()> {
+async fn process_delete(fs: impl FileSystem, path: FileSystemId) -> Result<()> {
     info!("Start deleting {:?}", path);
     let res = fs.rm(&path).await;
     if res.is_err() {
@@ -382,12 +382,12 @@ pub async fn process_tasks(
         let futures = queue.iter().map(|task: &Task| {
             let dst_fs = dst_fs.clone();
             let box_future: Pin<Box<dyn Future<Output = Result<()>>>> = match task {
-                Task::Move { from, to } => Box::pin(process_move(dst_fs, from.clone(), to.clone())),
+                Task::Move { from, to } => Box::pin(process_move(dst_fs, pbts!(from), pbts!(to))),
                 Task::Upload { path } => {
-                    Box::pin(process_upload(src_fs.clone(), dst_fs, path.clone()))
+                    Box::pin(process_upload(src_fs.clone(), dst_fs, pbts!(path)))
                 }
-                Task::CreateDir { path } => Box::pin(process_create_dir(dst_fs, path.clone())),
-                Task::Delete { path } => Box::pin(process_delete(dst_fs, path.clone())),
+                Task::CreateDir { path } => Box::pin(process_create_dir(dst_fs, pbts!(path))),
+                Task::Delete { path } => Box::pin(process_delete(dst_fs, pbts!(path))),
             };
             box_future
         });
@@ -396,3 +396,4 @@ pub async fn process_tasks(
     info!("Processing tasks done");
     Ok(())
 }
+
