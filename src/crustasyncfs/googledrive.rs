@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::path;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
@@ -11,6 +13,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Client as ReqwestClient;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 use url::Url;
 
 use crate::cli::CLIOption;
@@ -33,6 +36,7 @@ pub struct GoogleDriveFileSystem {
     pub auth_token: AuthToken,
     http_client: ReqwestClient,
     root_dir: PathBuf,
+    pub path_to_id: HashMap<PathBuf, String>, // TODO temp pub for debug
 }
 
 impl GoogleDriveFileSystem {
@@ -62,6 +66,7 @@ impl GoogleDriveFileSystem {
             auth_token,
             http_client,
             root_dir: root_dir.as_ref().to_path_buf(),
+            path_to_id: HashMap::default(),
         })
     }
 
@@ -92,11 +97,12 @@ impl GoogleDriveFileSystem {
 
     async fn build_node(
         &self,
-        directory_id: &str,
+        node_id: &str,
         parent_path: impl AsRef<Path>,
         is_root: bool,
+        path_to_id: Arc<Mutex<HashMap<PathBuf, String>>>,
     ) -> Result<Node> {
-        let meta = self.metadata(directory_id).await?;
+        let meta = self.metadata(node_id).await?;
 
         let path = if is_root {
             PathBuf::from("")
@@ -104,27 +110,36 @@ impl GoogleDriveFileSystem {
             parent_path.as_ref().join(&meta.name)
         };
 
+        path_to_id
+            .lock()
+            .await
+            .insert(path.clone(), node_id.to_string());
+
+        // handle directory
         if meta.is_dir() {
-            let children = self.ls(directory_id).await?;
+            let children = self.ls(node_id).await?;
 
             let futures: Vec<_> = children
                 .into_iter()
                 .filter(|gd_file| !(is_root && gd_file.name == Self::CRUSTASYNC_CONFIG_FILE))
                 .map(|gd_file| async {
                     if gd_file.is_dir() {
-                        Box::pin(self.build_node(&gd_file.id, &path, false)).await
+                        let path_to_id = path_to_id.clone();
+                        Box::pin(self.build_node(&gd_file.id, &path, false, path_to_id)).await
                     } else {
                         let child_path = path.join(&gd_file.name);
                         let hash = gd_file.sha256_checksum.unwrap();
                         let content_hash: ContentHash = hex::decode(hash)?.try_into().unwrap();
-                        Ok(Node {
+                        let node = Node {
                             node_type: NodeType::File,
                             name: gd_file.name,
-                            path: child_path,
+                            path: child_path.clone(),
                             updated_at: gd_file.modified_time,
                             content_hash,
                             children: vec![],
-                        })
+                        };
+                        path_to_id.lock().await.insert(child_path, gd_file.id);
+                        Ok(node)
                     }
                 })
                 .collect();
@@ -147,26 +162,29 @@ impl GoogleDriveFileSystem {
                 hasher.update(&node.content_hash);
             });
 
-            return Ok(Node {
+            let node = Node {
                 node_type: NodeType::Directory,
                 name: meta.name,
                 path,
                 updated_at: meta.modified_time,
                 content_hash: hasher.finalize().into(),
                 children,
-            });
+            };
+            return Ok(node);
         }
 
+        // handle file
         let hash = meta.sha256_checksum.unwrap();
         let content_hash: ContentHash = hex::decode(hash)?.try_into().unwrap();
-        Ok(Node {
+        let node = Node {
             node_type: NodeType::File,
             name: meta.name,
-            path,
+            path: path.clone(),
             updated_at: meta.modified_time,
             content_hash,
             children: vec![],
-        })
+        };
+        Ok(node)
     }
 
     async fn metadata(&self, file_id: &str) -> Result<GDFile> {
@@ -308,14 +326,20 @@ impl FileSystem for GoogleDriveFileSystem {
         todo!()
     }
 
-    async fn build_tree(&self) -> Result<Node> {
+    async fn build_tree(&mut self) -> Result<Node> {
         let root_dir_id = self.get_root_dir_id().await?;
         debug!("Root dir id: {}", root_dir_id);
-        let root = self.build_node(&root_dir_id, "", true).await?;
 
-        match root.node_type {
+        // TODO consider make self.path_to_id to arc mut
+        let path_to_id = Arc::new(Mutex::new(HashMap::new()));
+        let node = self
+            .build_node(&root_dir_id, "", true, path_to_id.clone())
+            .await?;
+        self.path_to_id = path_to_id.lock().await.clone();
+
+        match node.node_type {
             NodeType::File => Err(anyhow!("root is not a directory")),
-            NodeType::Directory => Ok(root),
+            NodeType::Directory => Ok(node),
         }
     }
 }

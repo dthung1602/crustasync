@@ -53,7 +53,7 @@ impl FileSystem for LocalFileSystem {
         Ok(())
     }
 
-    async fn build_tree(&self) -> Result<Node> {
+    async fn build_tree(&mut self) -> Result<Node> {
         let root = self.build_node(&self.root_dir, "", true).await?;
 
         match root.node_type {

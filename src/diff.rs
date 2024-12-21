@@ -83,6 +83,7 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
     // Move file & directories + delete files
     debug!("Finding files & dirs to move and delete");
     for dst_node in dst_tree {
+        // TODO handle circular rename
         // src and dst share the same file/directory
         if let Some(src_nodes) = src_content_table.get_mut(&dst_node.node_hash()) {
             if src_nodes.len() > 0 {

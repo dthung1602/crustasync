@@ -27,11 +27,13 @@ async fn main() -> anyhow::Result<()> {
         utils::print_version();
     }
 
-    let drivefs = GoogleDriveFileSystem::new(&option, "/bar").await?;
+    let mut drivefs = GoogleDriveFileSystem::new(&option, "/bar").await?;
 
     let tree = drivefs.build_tree().await?;
 
     utils::print_tree(&tree);
+
+    println!("PATH_TO_ID: {:?}", drivefs.path_to_id);
 
     return Ok(());
 

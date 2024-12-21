@@ -105,9 +105,9 @@ pub trait FileSystem: Clone {
 
     async fn mv(&self, src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<()>;
 
-    async fn build_tree(&self) -> Result<Node>;
+    async fn build_tree(&mut self) -> Result<Node>;
 
-    async fn sync_fs_to_file(&self) -> Result<()> {
+    async fn sync_fs_to_file(&mut self) -> Result<()> {
         let tree = self.build_tree().await?;
         let serialized = serde_lib::to_string(&tree)?.into_bytes();
         self.write(Self::CRUSTASYNC_CONFIG_FILE, serialized).await?;
