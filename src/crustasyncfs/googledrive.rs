@@ -429,11 +429,61 @@ impl FileSystem for GoogleDriveFileSystem {
             .send()
             .await?
             .error_for_status()?;
+        self.path_to_meta.remove(path);
         Ok(())
     }
 
     async fn mv(&mut self, src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<()> {
-        todo!()
+        let src = src.as_ref();
+        let dest = dest.as_ref();
+        if self.path_to_meta.contains_key(dest) {
+            debug!("File/folder at {dest:?} exists. Removing");
+            self.rm(dest).await?;
+        }
+        let Some(src_meta) = self.path_to_meta.get(src) else {
+            return Err(anyhow!("Cannot find source {src:?}"));
+        };
+        
+        debug!("Moving file {src:?} to {dest:?}");
+
+        let src_parent = src.parent().expect("Cannot find parent src dir");
+        let Some(src_parent_meta) = self.path_to_meta.get(src_parent) else {
+            return Err(anyhow!("Cannot find src parent {src_parent:?}"));
+        };
+        debug!("Src parent folder {src_parent:?} {src_parent_meta:?}");
+        
+        let dest_parent = dest.parent().expect("Cannot find parent dest dir");
+        let Some(dest_parent_meta) = self.path_to_meta.get(dest_parent) else {
+            return Err(anyhow!("Cannot find destination parent {dest_parent:?}"));
+        };
+        debug!("Dest parent folder {dest_parent:?} {dest_parent_meta:?}");
+        if !dest_parent_meta.is_dir() {
+            return Err(anyhow!("Destination parent is not a directory"));
+        }
+
+        let url = format!("{}/files/{}", GOOGLE_DRIVE_API_URL, src_meta.id);
+        let headers = self.auth_header().await.expect("Cannot build headers");
+        let query = [
+            ("fields", "id, name, mimeType, modifiedTime, parents"),
+            ("addParents", dest_parent_meta.id.as_str()),
+            ("removeParents", src_parent_meta.id.as_str()),
+        ];
+        let body = json!({
+            "name": dest.file_name().unwrap().to_str().unwrap(),
+        });
+        let res = self
+            .http_client
+            .patch(url)
+            .headers(headers)
+            .query(&query)
+            .json(&body)
+            .send()
+            .await?;
+
+        let new_meta: GDFile = res.json().await?;
+        self.path_to_meta.remove(src);
+        self.path_to_meta.insert(dest.to_path_buf(), new_meta);
+        Ok(())
     }
 
     async fn build_tree(&mut self) -> Result<Node> {
