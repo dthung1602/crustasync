@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::Debug;
+use std::iter::zip;
 use std::path;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,10 +9,12 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
+use itertools::Itertools;
 use log::{debug, info};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Client as ReqwestClient;
-use serde::Deserialize;
+use serde::{Deserialize};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use url::Url;
@@ -29,14 +32,16 @@ const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GOOGLE_DRIVE_API_URL: &str = "https://www.googleapis.com/drive/v3";
 const GOOGLE_DRIVE_LS_PAGE_SIZE: &str = "10";
 
+const GOOGLE_DRIVE_FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
+
 const CONFIG_FILE_NAME: &str = "google_drive.json";
 
 #[derive(Debug, Clone)]
 pub struct GoogleDriveFileSystem {
-    pub auth_token: AuthToken,
+    auth_token: AuthToken,
     http_client: ReqwestClient,
     root_dir: PathBuf,
-    pub path_to_id: HashMap<PathBuf, String>, // TODO temp pub for debug
+    pub(crate) path_to_meta: HashMap<PathBuf, GDFile>, // TODO temp pub for debug
 }
 
 impl GoogleDriveFileSystem {
@@ -62,38 +67,11 @@ impl GoogleDriveFileSystem {
 
         let http_client = reqwest::Client::new();
 
-        // For debug:
-        let mut path_to_id = HashMap::new();
-        path_to_id.insert(PathBuf::from("same_file2"), "1Y4KKmeGEgGHNyv5fDhSc8B5HLY73mpgX".to_string());
-        path_to_id.insert(PathBuf::from(""), "1TpiRwykAFAW6OIMV5gnuEDwALfZ0mZqx".to_string());
-        path_to_id.insert(PathBuf::from("d/same_file2"), "1jnc5T9sO5XqPlTtwUGa7IvCBhWa_FtJy".to_string());
-        path_to_id.insert(PathBuf::from("d/to_be_del1.rs"), "1kkLBmMvfGQ59JGjNv0Eqevnm5NmPuxBs".to_string());
-        path_to_id.insert(PathBuf::from("d/doesnt_exist/same_file2"), "1L8Gn_V4kqH4cWqYhXo31P-rfxfDYEBdR".to_string());
-        path_to_id.insert(PathBuf::from("d/doesnt_exist/aaa"), "1rQIJUcqhemYoaCgqKpiRdoTX8j2JGUob".to_string());
-        path_to_id.insert(PathBuf::from("d/another/file.txt"), "1qfhk3wKnisONMQeciM7JmgqZQ8UuosFM".to_string());
-        path_to_id.insert(PathBuf::from("c.md"), "1hWgF1xZFe6uihSPuA54lbUioHsULLooq".to_string());
-        path_to_id.insert(PathBuf::from("d/doesnt_exist/nested_doesnt_exist"), "1TyEUxT0xdM96oHhRUFezD3ADwo_0WYh2".to_string());
-        path_to_id.insert(PathBuf::from("dir_to_file/to_be_del2/inside_to_be_del2"), "1jBoe5op7adgf19u3gxYtkMgIYiQPUYvG".to_string());
-        path_to_id.insert(PathBuf::from("file_to_dir"), "1oa2ECpw5l5p_76XS7s-_lwHwE0mbnw2k".to_string());
-        path_to_id.insert(PathBuf::from("same_file"), "1qkYzkY8agA_cFHAoJsqxF7KVD9rmo6bF".to_string());
-        path_to_id.insert(PathBuf::from("dir_to_file"), "1SPFBULTvPsAQ_LQfNvLlJACW5dNCgLyy".to_string());
-        path_to_id.insert(PathBuf::from("dir_to_file/to_be_del1"), "1NuTw17RdMaX9r2XCD_CgYFhGF7ZijT3o".to_string());
-        path_to_id.insert(PathBuf::from("d/doesnt_exist"), "1Uv4bxh8OZumVDsgfEN4KnYnrUkxvALUA".to_string());
-        path_to_id.insert(PathBuf::from("d/another"), "1bAB__rZhU0QwEqT499NGj3CzuirTJk9X".to_string());
-        path_to_id.insert(PathBuf::from("dir_to_file/to_be_del2"), "1kCnFiAlCsCu7j74ZO06vTvZKTDp6xf5v".to_string());
-        path_to_id.insert(PathBuf::from("abc"), "1-SCvc3vXx6upffadeoR-z2Ykd_91cN_F".to_string());
-        path_to_id.insert(PathBuf::from("d"), "1wNZd5kvzI-OshU4P7VFjAxpr7hV_1OSe".to_string());
-        path_to_id.insert(PathBuf::from("to_be_del2.rs"), "14U8FOR-OtdsJAxJYBI3-aJhnFXmImVaB".to_string());
-        path_to_id.insert(PathBuf::from("d/another/same_file"), "1wAG82-olTdyIJwhTCs-PR6WToRast8-W".to_string());
-        path_to_id.insert(PathBuf::from("d/doesnt_exist/nested_doesnt_exist/bbb"), "1bOe4wDCh8Ha3ySchfQx6ndgjlVCwm1Wk".to_string());
-        path_to_id.insert(PathBuf::from("dir_to_file/to_be_mov_dir"), "1vZNMCMB6mKxKK8JM9IeKB83vQ3P4UcOV".to_string());
-        path_to_id.insert(PathBuf::from("dir_to_file/to_be_mov_dir/inside_to_be_mov_dir"), "1115schRWmLxBIvp78nxgNepsUs1xr1P-".to_string());
-
         Ok(Self {
             auth_token,
             http_client,
             root_dir: root_dir.as_ref().to_path_buf(),
-            path_to_id,
+            path_to_meta: HashMap::default(),
         })
     }
 
@@ -127,7 +105,7 @@ impl GoogleDriveFileSystem {
         node_id: &str,
         parent_path: impl AsRef<Path>,
         is_root: bool,
-        path_to_id: Arc<Mutex<HashMap<PathBuf, String>>>,
+        path_to_meta: Arc<Mutex<HashMap<PathBuf, GDFile>>>,
     ) -> Result<Node> {
         let meta = self.metadata(node_id).await?;
 
@@ -137,10 +115,7 @@ impl GoogleDriveFileSystem {
             parent_path.as_ref().join(&meta.name)
         };
 
-        path_to_id
-            .lock()
-            .await
-            .insert(path.clone(), node_id.to_string());
+        path_to_meta.lock().await.insert(path.clone(), meta.clone());
 
         // handle directory
         if meta.is_dir() {
@@ -151,21 +126,21 @@ impl GoogleDriveFileSystem {
                 .filter(|gd_file| !(is_root && gd_file.name == Self::CRUSTASYNC_CONFIG_FILE))
                 .map(|gd_file| async {
                     if gd_file.is_dir() {
-                        let path_to_id = path_to_id.clone();
-                        Box::pin(self.build_node(&gd_file.id, &path, false, path_to_id)).await
+                        let path_to_meta = path_to_meta.clone();
+                        Box::pin(self.build_node(&gd_file.id, &path, false, path_to_meta)).await
                     } else {
                         let child_path = path.join(&gd_file.name);
-                        let hash = gd_file.sha256_checksum.unwrap();
+                        let hash = gd_file.sha256_checksum.as_deref().unwrap();
                         let content_hash: ContentHash = hex::decode(hash)?.try_into().unwrap();
                         let node = Node {
                             node_type: NodeType::File,
-                            name: gd_file.name,
+                            name: gd_file.name.clone(),
                             path: child_path.clone(),
-                            updated_at: gd_file.modified_time,
+                            updated_at: gd_file.modified_time.clone(),
                             content_hash,
                             children: vec![],
                         };
-                        path_to_id.lock().await.insert(child_path, gd_file.id);
+                        path_to_meta.lock().await.insert(child_path, gd_file);
                         Ok(node)
                     }
                 })
@@ -331,11 +306,15 @@ impl GoogleDriveFileSystem {
         }
     }
 
-    async fn create_file(&mut self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()> {
+    async fn create_file(
+        &mut self,
+        path: impl AsRef<Path>,
+        content: impl AsRef<[u8]>,
+    ) -> Result<()> {
         todo!()
     }
-    
-    async fn update_file(&self, file_id: &String, content: impl AsRef<[u8]>) -> Result<()> {
+
+    async fn update_file(&self, file_meta: &GDFile, content: impl AsRef<[u8]>) -> Result<()> {
         todo!()
     }
 }
@@ -343,8 +322,8 @@ impl GoogleDriveFileSystem {
 impl FileSystem for GoogleDriveFileSystem {
     async fn write(&mut self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()> {
         let pb = path.as_ref().to_path_buf();
-        if let Some(file_id) = self.path_to_id.get(&pb) {
-            self.update_file(file_id, content).await
+        if let Some(file_meta) = self.path_to_meta.get(&pb) {
+            self.update_file(file_meta, content).await
         } else {
             self.create_file(path, content).await
         }
@@ -352,13 +331,13 @@ impl FileSystem for GoogleDriveFileSystem {
 
     async fn read(&self, path: impl AsRef<Path>) -> Result<Vec<u8>> {
         let pb = path.as_ref().to_path_buf();
-        let file_id = self
-            .path_to_id
+        let file_meta = self
+            .path_to_meta
             .get(&pb)
             .expect("Cannot find file id of path");
-        debug!("Reading file {}", file_id);
+        debug!("Reading file {:?}", file_meta);
 
-        let url = format!("{GOOGLE_DRIVE_API_URL}/files/{file_id}");
+        let url = format!("{}/files/{}", GOOGLE_DRIVE_API_URL, file_meta.id);
         let query = (
             ("alt", "media"),
             ("acknowledgeAbuse", "true"),
@@ -372,7 +351,8 @@ impl FileSystem for GoogleDriveFileSystem {
             .headers(headers)
             .query(&query)
             .send()
-            .await.expect("Cannot download file")
+            .await
+            .expect("Cannot download file")
             .bytes()
             .await?;
         debug!("Downloaded file size: {}", response.len());
@@ -380,7 +360,58 @@ impl FileSystem for GoogleDriveFileSystem {
     }
 
     async fn mkdir(&mut self, path: impl AsRef<Path>) -> Result<()> {
-        todo!()
+        let path = path.as_ref();
+        let parent_path = path.parent().unwrap();
+        let parent_child_pairs = zip(parent_path.ancestors(), path.ancestors())
+            .collect_vec()
+            .into_iter()
+            .rev();
+
+        for (parent, child) in parent_child_pairs {
+            debug!("Make dir {child:?} with parent {parent:?}");
+
+            let Some(parent_meta) = self.path_to_meta.get(parent) else {
+                return Err(anyhow!("Cannot find parent meta data {parent:?}"));
+            };
+
+            debug!("Found parent meta {parent_meta:?}");
+
+            if let Some(child_meta) = self.path_to_meta.get(child) {
+                if child_meta.is_dir() {
+                    debug!("Directory {child:?} already exists");
+                    continue;
+                }
+                return Err(anyhow!(format!(
+                    "{child:?} already exists and is not a directory"
+                )));
+            }
+
+            let name = child.file_name().unwrap().to_str().unwrap();
+            let body = json!({
+                "name": name,
+                "parents": [parent_meta.id.as_str()],
+                "mimeType": GOOGLE_DRIVE_FOLDER_MIME_TYPE
+            });
+            debug!("BODY: {body:?}");
+            let url = format!("{GOOGLE_DRIVE_API_URL}/files");
+            let headers = self.auth_header().await.expect("Cannot build headers");
+            let query = [("fields", "id, name, mimeType, modifiedTime")];
+            let response = self
+                .http_client
+                .post(url)
+                .headers(headers)
+                .query(&query)
+                .json(&body)
+                .send()
+                .await?;
+            debug!("Got response status: {}", response.status());
+
+            let child_meta = response.json().await?;
+            debug!("Got response content {:?}", child_meta);
+            self.path_to_meta.insert(child.to_path_buf(), child_meta);
+        }
+
+        Ok(())
     }
 
     async fn rm(&mut self, path: impl AsRef<Path>) -> Result<()> {
@@ -395,12 +426,12 @@ impl FileSystem for GoogleDriveFileSystem {
         let root_dir_id = self.get_root_dir_id().await?;
         debug!("Root dir id: {}", root_dir_id);
 
-        // TODO consider make self.path_to_id to arc mut
-        let path_to_id = Arc::new(Mutex::new(HashMap::new()));
+        // TODO consider make self.path_to_meta to arc mut
+        let path_to_meta = Arc::new(Mutex::new(HashMap::new()));
         let node = self
-            .build_node(&root_dir_id, "", true, path_to_id.clone())
+            .build_node(&root_dir_id, "", true, path_to_meta.clone())
             .await?;
-        self.path_to_id = path_to_id.lock().await.clone();
+        self.path_to_meta = path_to_meta.lock().await.clone();
 
         match node.node_type {
             NodeType::File => Err(anyhow!("root is not a directory")),
@@ -412,23 +443,23 @@ impl FileSystem for GoogleDriveFileSystem {
 // https://developers.google.com/drive/api/guides/search-files
 // https://developers.google.com/drive/api/reference/rest/v2/files/list
 
-#[derive(Debug, Deserialize)]
-struct GDFile {
-    id: String,
-    name: String,
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct GDFile {
+    pub(crate) id: String,
+    pub(crate) name: String,
     #[serde(rename = "mimeType")]
-    mime_type: String,
+    pub(crate) mime_type: String,
     #[serde(rename = "modifiedTime")]
-    modified_time: DateTime<Utc>,
+    pub(crate) modified_time: DateTime<Utc>,
     #[serde(rename = "sha256Checksum")]
-    sha256_checksum: Option<String>,
+    pub(crate) sha256_checksum: Option<String>,
     #[serde(rename = "webContentLink")]
-    download_url: Option<String>,
+    pub(crate) download_url: Option<String>,
 }
 
 impl GDFile {
     fn is_dir(&self) -> bool {
-        self.mime_type == "application/vnd.google-apps.folder"
+        self.mime_type == GOOGLE_DRIVE_FOLDER_MIME_TYPE
     }
 }
 

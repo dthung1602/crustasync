@@ -321,7 +321,7 @@ fn dedup_del_tasks(tasks: Vec<Task>) -> Vec<Task> {
 }
 
 async fn process_move(
-    fs: impl FileSystem,
+    mut fs: impl FileSystem,
     from: impl AsRef<Path> + Debug,
     to: impl AsRef<Path> + Debug,
 ) -> Result<()> {
@@ -337,7 +337,7 @@ async fn process_move(
 
 async fn process_upload(
     src_fs: impl FileSystem,
-    dst_fs: impl FileSystem,
+    mut dst_fs: impl FileSystem,
     path: impl AsRef<Path> + Debug,
 ) -> Result<()> {
     info!("Start uploading to {:?}", path);
@@ -351,7 +351,7 @@ async fn process_upload(
     res
 }
 
-async fn process_create_dir(fs: impl FileSystem, path: impl AsRef<Path> + Debug) -> Result<()> {
+async fn process_create_dir(mut fs: impl FileSystem, path: impl AsRef<Path> + Debug) -> Result<()> {
     info!("Start creating dir to {:?}", path);
     let res = fs.mkdir(&path).await;
     if res.is_err() {
@@ -362,7 +362,7 @@ async fn process_create_dir(fs: impl FileSystem, path: impl AsRef<Path> + Debug)
     res
 }
 
-async fn process_delete(fs: impl FileSystem, path: impl AsRef<Path> + Debug) -> Result<()> {
+async fn process_delete(mut fs: impl FileSystem, path: impl AsRef<Path> + Debug) -> Result<()> {
     info!("Start deleting {:?}", path);
     let res = fs.rm(&path).await;
     if res.is_err() {

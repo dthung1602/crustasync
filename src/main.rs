@@ -5,7 +5,10 @@ mod oauth;
 mod utils;
 
 use std::cmp::{Ordering, PartialOrd};
+use std::collections::HashMap;
+use std::path::PathBuf;
 
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use cli::LogLevel;
 use crustasyncfs::base::FileSystem;
@@ -14,6 +17,8 @@ use crustasyncfs::local::LocalFileSystem;
 use hex;
 use log::{debug, error, info, warn};
 use tokio::io;
+
+use crate::crustasyncfs::googledrive::GDFile;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -32,10 +37,11 @@ async fn main() -> anyhow::Result<()> {
     // let tree = drivefs.build_tree().await?;
 
     // utils::print_tree(&tree);
-    
-    let content = drivefs.read("d/doesnt_exist/same_file2").await?;
-    println!("Content: {:?}", content);
-    
+
+    drivefs
+        .mkdir("dd/doesnt_exist/nested_doesnt_exist/newly/nested/another")
+        .await?;
+
     return Ok(());
 
     info!("Building src directory tree");
