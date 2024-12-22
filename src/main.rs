@@ -29,12 +29,13 @@ async fn main() -> anyhow::Result<()> {
 
     let mut drivefs = GoogleDriveFileSystem::new(&option, "/bar").await?;
 
-    let tree = drivefs.build_tree().await?;
+    // let tree = drivefs.build_tree().await?;
 
-    utils::print_tree(&tree);
-
-    println!("PATH_TO_ID: {:?}", drivefs.path_to_id);
-
+    // utils::print_tree(&tree);
+    
+    let content = drivefs.read("d/doesnt_exist/same_file2").await?;
+    println!("Content: {:?}", content);
+    
     return Ok(());
 
     info!("Building src directory tree");

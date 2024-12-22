@@ -95,15 +95,15 @@ impl<'a> IntoIterator for &'a Node {
 pub trait FileSystem: Clone {
     const CRUSTASYNC_CONFIG_FILE: &'static str = ".crustasync";
 
-    async fn write(&self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()>;
+    async fn write(&mut self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()>;
 
     async fn read(&self, path: impl AsRef<Path>) -> Result<Vec<u8>>;
 
-    async fn mkdir(&self, path: impl AsRef<Path>) -> Result<()>;
+    async fn mkdir(&mut self, path: impl AsRef<Path>) -> Result<()>;
 
-    async fn rm(&self, path: impl AsRef<Path>) -> Result<()>;
+    async fn rm(&mut self, path: impl AsRef<Path>) -> Result<()>;
 
-    async fn mv(&self, src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<()>;
+    async fn mv(&mut self, src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<()>;
 
     async fn build_tree(&mut self) -> Result<Node>;
 

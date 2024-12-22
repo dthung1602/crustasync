@@ -62,11 +62,38 @@ impl GoogleDriveFileSystem {
 
         let http_client = reqwest::Client::new();
 
+        // For debug:
+        let mut path_to_id = HashMap::new();
+        path_to_id.insert(PathBuf::from("same_file2"), "1Y4KKmeGEgGHNyv5fDhSc8B5HLY73mpgX".to_string());
+        path_to_id.insert(PathBuf::from(""), "1TpiRwykAFAW6OIMV5gnuEDwALfZ0mZqx".to_string());
+        path_to_id.insert(PathBuf::from("d/same_file2"), "1jnc5T9sO5XqPlTtwUGa7IvCBhWa_FtJy".to_string());
+        path_to_id.insert(PathBuf::from("d/to_be_del1.rs"), "1kkLBmMvfGQ59JGjNv0Eqevnm5NmPuxBs".to_string());
+        path_to_id.insert(PathBuf::from("d/doesnt_exist/same_file2"), "1L8Gn_V4kqH4cWqYhXo31P-rfxfDYEBdR".to_string());
+        path_to_id.insert(PathBuf::from("d/doesnt_exist/aaa"), "1rQIJUcqhemYoaCgqKpiRdoTX8j2JGUob".to_string());
+        path_to_id.insert(PathBuf::from("d/another/file.txt"), "1qfhk3wKnisONMQeciM7JmgqZQ8UuosFM".to_string());
+        path_to_id.insert(PathBuf::from("c.md"), "1hWgF1xZFe6uihSPuA54lbUioHsULLooq".to_string());
+        path_to_id.insert(PathBuf::from("d/doesnt_exist/nested_doesnt_exist"), "1TyEUxT0xdM96oHhRUFezD3ADwo_0WYh2".to_string());
+        path_to_id.insert(PathBuf::from("dir_to_file/to_be_del2/inside_to_be_del2"), "1jBoe5op7adgf19u3gxYtkMgIYiQPUYvG".to_string());
+        path_to_id.insert(PathBuf::from("file_to_dir"), "1oa2ECpw5l5p_76XS7s-_lwHwE0mbnw2k".to_string());
+        path_to_id.insert(PathBuf::from("same_file"), "1qkYzkY8agA_cFHAoJsqxF7KVD9rmo6bF".to_string());
+        path_to_id.insert(PathBuf::from("dir_to_file"), "1SPFBULTvPsAQ_LQfNvLlJACW5dNCgLyy".to_string());
+        path_to_id.insert(PathBuf::from("dir_to_file/to_be_del1"), "1NuTw17RdMaX9r2XCD_CgYFhGF7ZijT3o".to_string());
+        path_to_id.insert(PathBuf::from("d/doesnt_exist"), "1Uv4bxh8OZumVDsgfEN4KnYnrUkxvALUA".to_string());
+        path_to_id.insert(PathBuf::from("d/another"), "1bAB__rZhU0QwEqT499NGj3CzuirTJk9X".to_string());
+        path_to_id.insert(PathBuf::from("dir_to_file/to_be_del2"), "1kCnFiAlCsCu7j74ZO06vTvZKTDp6xf5v".to_string());
+        path_to_id.insert(PathBuf::from("abc"), "1-SCvc3vXx6upffadeoR-z2Ykd_91cN_F".to_string());
+        path_to_id.insert(PathBuf::from("d"), "1wNZd5kvzI-OshU4P7VFjAxpr7hV_1OSe".to_string());
+        path_to_id.insert(PathBuf::from("to_be_del2.rs"), "14U8FOR-OtdsJAxJYBI3-aJhnFXmImVaB".to_string());
+        path_to_id.insert(PathBuf::from("d/another/same_file"), "1wAG82-olTdyIJwhTCs-PR6WToRast8-W".to_string());
+        path_to_id.insert(PathBuf::from("d/doesnt_exist/nested_doesnt_exist/bbb"), "1bOe4wDCh8Ha3ySchfQx6ndgjlVCwm1Wk".to_string());
+        path_to_id.insert(PathBuf::from("dir_to_file/to_be_mov_dir"), "1vZNMCMB6mKxKK8JM9IeKB83vQ3P4UcOV".to_string());
+        path_to_id.insert(PathBuf::from("dir_to_file/to_be_mov_dir/inside_to_be_mov_dir"), "1115schRWmLxBIvp78nxgNepsUs1xr1P-".to_string());
+
         Ok(Self {
             auth_token,
             http_client,
             root_dir: root_dir.as_ref().to_path_buf(),
-            path_to_id: HashMap::default(),
+            path_to_id,
         })
     }
 
@@ -303,26 +330,64 @@ impl GoogleDriveFileSystem {
             Err(anyhow!("No files found"))
         }
     }
+
+    async fn create_file(&mut self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()> {
+        todo!()
+    }
+    
+    async fn update_file(&self, file_id: &String, content: impl AsRef<[u8]>) -> Result<()> {
+        todo!()
+    }
 }
 
 impl FileSystem for GoogleDriveFileSystem {
-    async fn write(&self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()> {
-        todo!()
+    async fn write(&mut self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()> {
+        let pb = path.as_ref().to_path_buf();
+        if let Some(file_id) = self.path_to_id.get(&pb) {
+            self.update_file(file_id, content).await
+        } else {
+            self.create_file(path, content).await
+        }
     }
 
     async fn read(&self, path: impl AsRef<Path>) -> Result<Vec<u8>> {
+        let pb = path.as_ref().to_path_buf();
+        let file_id = self
+            .path_to_id
+            .get(&pb)
+            .expect("Cannot find file id of path");
+        debug!("Reading file {}", file_id);
+
+        let url = format!("{GOOGLE_DRIVE_API_URL}/files/{file_id}");
+        let query = (
+            ("alt", "media"),
+            ("acknowledgeAbuse", "true"),
+            ("supportsAllDrives", "true"),
+        );
+        let headers = self.auth_header().await.expect("Cannot build headers");
+
+        let response = self
+            .http_client
+            .get(url)
+            .headers(headers)
+            .query(&query)
+            .send()
+            .await.expect("Cannot download file")
+            .bytes()
+            .await?;
+        debug!("Downloaded file size: {}", response.len());
+        Ok(response.into())
+    }
+
+    async fn mkdir(&mut self, path: impl AsRef<Path>) -> Result<()> {
         todo!()
     }
 
-    async fn mkdir(&self, path: impl AsRef<Path>) -> Result<()> {
+    async fn rm(&mut self, path: impl AsRef<Path>) -> Result<()> {
         todo!()
     }
 
-    async fn rm(&self, path: impl AsRef<Path>) -> Result<()> {
-        todo!()
-    }
-
-    async fn mv(&self, src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<()> {
+    async fn mv(&mut self, src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<()> {
         todo!()
     }
 

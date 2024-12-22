@@ -13,7 +13,7 @@ pub struct LocalFileSystem {
 }
 
 impl FileSystem for LocalFileSystem {
-    async fn write(&self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()> {
+    async fn write(&mut self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()> {
         let path_buf = self.abs_path(path);
         let parent = path_buf.parent().unwrap();
         fs::create_dir_all(parent).await?;
@@ -27,14 +27,14 @@ impl FileSystem for LocalFileSystem {
         fs::read(path_buf).await.map_err(anyhow::Error::from)
     }
 
-    async fn mkdir(&self, path: impl AsRef<Path>) -> Result<()> {
+    async fn mkdir(&mut self, path: impl AsRef<Path>) -> Result<()> {
         let path_buf = self.abs_path(path);
         fs::create_dir_all(path_buf)
             .await
             .map_err(anyhow::Error::from)
     }
 
-    async fn rm(&self, path: impl AsRef<Path>) -> Result<()> {
+    async fn rm(&mut self, path: impl AsRef<Path>) -> Result<()> {
         let path_buf = self.abs_path(path);
         let meta = fs::metadata(&path_buf).await?;
         if meta.is_dir() {
@@ -48,7 +48,7 @@ impl FileSystem for LocalFileSystem {
         }
     }
 
-    async fn mv(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
+    async fn mv(&mut self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
         fs::rename(self.abs_path(from), self.abs_path(to)).await?;
         Ok(())
     }
