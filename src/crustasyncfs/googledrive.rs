@@ -13,7 +13,7 @@ use itertools::Itertools;
 use log::{debug, info};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Client as ReqwestClient;
-use serde::{Deserialize};
+use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
@@ -415,7 +415,21 @@ impl FileSystem for GoogleDriveFileSystem {
     }
 
     async fn rm(&mut self, path: impl AsRef<Path>) -> Result<()> {
-        todo!()
+        let path = path.as_ref();
+        let Some(GDFile { id, .. }) = self.path_to_meta.get(path) else {
+            return Err(anyhow!("Cannot find file {path:?}"));
+        };
+        debug!("Removing file {path:?} with id {id:?}");
+
+        let url = format!("{GOOGLE_DRIVE_API_URL}/files/{id}");
+        let headers = self.auth_header().await.expect("Cannot build headers");
+        self.http_client
+            .delete(url)
+            .headers(headers)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
     }
 
     async fn mv(&mut self, src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<()> {
