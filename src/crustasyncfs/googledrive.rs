@@ -30,6 +30,7 @@ const GOOGLE_AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 
 const GOOGLE_DRIVE_API_URL: &str = "https://www.googleapis.com/drive/v3";
+const GOOGLE_DRIVE_UPLOAD_API_URL: &str = "https://www.googleapis.com/upload/drive/v3/files";
 const GOOGLE_DRIVE_LS_PAGE_SIZE: &str = "10";
 
 const GOOGLE_DRIVE_FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
@@ -305,28 +306,86 @@ impl GoogleDriveFileSystem {
             Err(anyhow!("No files found"))
         }
     }
-
-    async fn create_file(
-        &mut self,
-        path: impl AsRef<Path>,
-        content: impl AsRef<[u8]>,
-    ) -> Result<()> {
-        todo!()
-    }
-
-    async fn update_file(&self, file_meta: &GDFile, content: impl AsRef<[u8]>) -> Result<()> {
-        todo!()
-    }
 }
 
 impl FileSystem for GoogleDriveFileSystem {
     async fn write(&mut self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()> {
-        let pb = path.as_ref().to_path_buf();
-        if let Some(file_meta) = self.path_to_meta.get(&pb) {
-            self.update_file(file_meta, content).await
-        } else {
-            self.create_file(path, content).await
+        let path = path.as_ref();
+
+        // check parent is dir
+        let parent_pb = path
+            .parent()
+            .expect("Cannot get parent directory")
+            .to_path_buf();
+        let Some(parent_meta) = self.path_to_meta.get(&parent_pb) else {
+            return Err(anyhow!("Cannot find parent directory"));
+        };
+        if !parent_meta.is_dir() {
+            return Err(anyhow!("Parent is not a directory"));
         }
+
+        // decide whether to create or update
+        let gd_meta = self.path_to_meta.get(path);
+        let req_builder = if let Some(gd_meta) = gd_meta {
+            debug!("Updating file at {}", path.display());
+            self.http_client
+                .patch(format!("{}/{}", GOOGLE_DRIVE_UPLOAD_API_URL, gd_meta.id))
+        } else {
+            debug!("Creating file at {}", path.display());
+            let name = path.file_name().unwrap().to_str().unwrap();
+            let body = json!({
+                "name": name,
+                "parents": [parent_meta.id.as_str()],
+            });
+            self.http_client
+                .post(GOOGLE_DRIVE_UPLOAD_API_URL)
+                .json(&body)
+        };
+
+        // make first request to acquire the upload session url
+        let headers = self.auth_header().await.expect("Cannot build headers");
+        let query = [("uploadType", "resumable")];
+        let res = req_builder
+            .headers(headers)
+            .query(&query)
+            .send()
+            .await?
+            .error_for_status()?;
+        let res_headers = res.headers();
+        let Some(location) = res_headers.get("location") else {
+            return Err(anyhow!("No location header found"));
+        };
+        debug!("Upload url {:?}", location);
+
+        // actually upload the file
+        // TODO upload in chunk for large file
+        let content = Vec::from(content.as_ref());
+        let content_len = content.len().to_string();
+        let mut headers = self.auth_header().await.expect("Cannot build headers");
+        headers.append(
+            "content-length",
+            HeaderValue::from_str(&content_len).expect("Cannot stringify content length"),
+        );
+        let file_meta: serde_json::Value = self
+            .http_client
+            .put(location.to_str().unwrap())
+            .headers(headers)
+            .body(content)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await
+            .expect("Cannot deserialize JSON response");
+        debug!("Upload response: {:?}", file_meta);
+
+        // file_meta doesn't contain all fields we need
+        // request again for metadata
+        let file_id = file_meta.get("id").unwrap().as_str().unwrap();
+        let file_meta = self.metadata(file_id).await?;
+        self.path_to_meta.insert(path.to_path_buf(), file_meta);
+
+        Ok(())
     }
 
     async fn read(&self, path: impl AsRef<Path>) -> Result<Vec<u8>> {
@@ -443,7 +502,7 @@ impl FileSystem for GoogleDriveFileSystem {
         let Some(src_meta) = self.path_to_meta.get(src) else {
             return Err(anyhow!("Cannot find source {src:?}"));
         };
-        
+
         debug!("Moving file {src:?} to {dest:?}");
 
         let src_parent = src.parent().expect("Cannot find parent src dir");
@@ -451,7 +510,7 @@ impl FileSystem for GoogleDriveFileSystem {
             return Err(anyhow!("Cannot find src parent {src_parent:?}"));
         };
         debug!("Src parent folder {src_parent:?} {src_parent_meta:?}");
-        
+
         let dest_parent = dest.parent().expect("Cannot find parent dest dir");
         let Some(dest_parent_meta) = self.path_to_meta.get(dest_parent) else {
             return Err(anyhow!("Cannot find destination parent {dest_parent:?}"));
@@ -505,7 +564,7 @@ impl FileSystem for GoogleDriveFileSystem {
 }
 
 // https://developers.google.com/drive/api/guides/search-files
-// https://developers.google.com/drive/api/reference/rest/v2/files/list
+// https://developers.google.com/drive/api/reference/rest/v3/files/list
 
 #[derive(Debug, Deserialize, Clone)]
 pub(crate) struct GDFile {

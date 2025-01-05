@@ -14,6 +14,7 @@ use rand::RngCore;
 use reqwest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use thiserror;
 use tokio::fs;
 use tokio::io;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -23,6 +24,18 @@ use url::Url;
 
 const OAUTH_STATE_LEN: usize = 128;
 const OAUTH_PKCE_LEN: usize = 32;
+
+#[derive(thiserror::Error, Debug)]
+pub enum AuthError {
+    #[error("refresh token expired")]
+    RefreshError,
+    #[error("invalid response")]
+    InvalidResponse,
+    #[error("unexpected status code")]
+    UnexpectedStatusCode { status_code: reqwest::StatusCode },
+    #[error("network error")]
+    NetworkError(#[from] reqwest::Error),
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TokenType {
@@ -47,7 +60,7 @@ impl AuthToken {
     pub async fn from_response(
         res: reqwest::Response,
         refresh_token: Option<String>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, AuthError> {
         let data: serde_json::Value = res.json().await?;
         debug!("Got response: {:#?}", data);
 
@@ -276,7 +289,7 @@ impl OAuthPublicClient {
         Ok(())
     }
 
-    async fn exchange_code(&self) -> anyhow::Result<AuthToken> {
+    async fn exchange_code(&self) -> Result<AuthToken, AuthError> {
         debug!("Exchanging code");
         let auth_code = self.auth_code.as_ref().unwrap();
         let params = [
@@ -294,10 +307,22 @@ impl OAuthPublicClient {
             ("grant_type", &"refresh_token".to_string()),
             ("refresh_token", &token.refresh_token),
         ];
-        self.req_auth_server(&params).await
+        match self.req_auth_server(&params).await {
+            Ok(auth_token) => Ok(auth_token),
+            Err(err) => match err {
+                AuthError::RefreshError => {
+                    debug!("Refresh token expired. Requesting new token");
+                    self.new_auth_token().await
+                }
+                _ => Err(anyhow!(err)),
+            },
+        }
     }
 
-    async fn req_auth_server(&self, extra_params: &[(&str, &String)]) -> anyhow::Result<AuthToken> {
+    async fn req_auth_server(
+        &self,
+        extra_params: &[(&str, &String)],
+    ) -> Result<AuthToken, AuthError> {
         let mut params = vec![
             ("client_id", &self.client_id),
             ("client_secret", &self.client_secret),
@@ -320,12 +345,15 @@ impl OAuthPublicClient {
             .send()
             .await?;
 
-        debug!("Get status: {}", res.status());
-        if res.status() != reqwest::StatusCode::OK {
-            return Err(anyhow!(
-                "Auth server returned unexpected code: {}",
-                res.status()
-            ));
+        let status_code = res.status();
+        debug!("Get status: {status_code}");
+        if status_code != reqwest::StatusCode::OK {
+            let data: serde_json::Value = res.json().await?;
+            let err_msg = data.get("error").unwrap().as_str().unwrap();
+            if err_msg == "invalid_grant" {
+                return Err(AuthError::RefreshError);
+            }
+            return Err(AuthError::UnexpectedStatusCode { status_code });
         }
 
         Ok(AuthToken::from_response(res, refresh_token).await?)
