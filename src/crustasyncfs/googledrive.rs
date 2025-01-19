@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::Debug;
+use std::fmt::Formatter;
 use std::iter::zip;
-use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR};
+use std::path::{Display, Path, PathBuf, MAIN_SEPARATOR_STR};
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -20,9 +21,122 @@ use url::Url;
 
 use crate::cli::CLIOption;
 use crate::crustasyncfs::base::{ContentHash, FileSystem, Node, NodeType};
-use crate::crustasyncfs::googledrive_error::GDError;
 use crate::error::{Error, Result};
+use crate::oauth::AuthError;
 use crate::oauth::{AuthToken, OAuthPublicClient};
+
+// ------------------------------
+// region Error
+// ------------------------------
+
+pub enum GDError {
+    MissingField { field: String },
+    InvalidData { field: String, message: String },
+    FileNotFound { file: String },
+    ParentNotFound { file: String },
+    Authentication(AuthError),
+}
+
+impl std::error::Error for GDError {}
+
+impl Debug for GDError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self, f)
+    }
+}
+
+impl std::fmt::Display for GDError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GDError::MissingField { field } => write!(f, "GDError: Missing field {field}"),
+            GDError::InvalidData { field, message } => {
+                write!(f, "GDError: Invalid data in {field}, {message}")
+            }
+            GDError::FileNotFound { file } => {
+                write!(f, "GDError: File not found {file}")
+            }
+            GDError::ParentNotFound { file } => {
+                write!(f, "GDError: Cannot find parent of {file}")
+            }
+            GDError::Authentication(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+impl From<AuthError> for GDError {
+    fn from(error: AuthError) -> Self {
+        GDError::Authentication(error)
+    }
+}
+
+// endregion
+
+// ------------------------------
+// region GDFile
+// ------------------------------
+
+// https://developers.google.com/drive/api/guides/search-files
+// https://developers.google.com/drive/api/reference/rest/v3/files/list
+
+// TODO pub for debug
+#[derive(Debug, Deserialize, Clone)]
+pub struct GDFile {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    #[serde(rename = "modifiedTime")]
+    pub modified_time: DateTime<Utc>,
+    #[serde(rename = "sha256Checksum")]
+    pub sha256_checksum: Option<String>,
+    #[serde(rename = "webContentLink")]
+    pub download_url: Option<String>,
+}
+
+impl GDFile {
+    fn is_dir(&self) -> bool {
+        self.mime_type == GOOGLE_DRIVE_FOLDER_MIME_TYPE
+    }
+
+    fn assert_is_dir(&self) -> Result<()> {
+        if self.is_dir() {
+            Ok(())
+        } else {
+            Err(Error::ExpectDirectory(PathBuf::from(self.name.clone())))
+        }
+    }
+
+    fn content_hash(&self) -> Result<ContentHash> {
+        let Some(hash) = &self.sha256_checksum else {
+            return Err(Error::from(GDError::MissingField {
+                field: "sha256_checksum".to_string(),
+            }));
+        };
+        let Ok(content_hash) = hex::decode(hash) else {
+            return Err(Error::from(GDError::InvalidData {
+                field: "sha256_checksum".to_string(),
+                message: "Cannot decode hex value".to_string(),
+            }));
+        };
+        match content_hash.try_into() {
+            Ok(hash) => Ok(hash),
+            Err(_) => Err(Error::Unknown(anyhow!("Cannot convert hash"))),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GDResp {
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
+    files: Vec<GDFile>,
+}
+
+// endregion
+
+// ------------------------------
+// region FileSystem
+// ------------------------------
 
 // Google client id for public client
 const GOOGLE_CLIENT_ID: &str = env!("GOOGLE_CLIENT_ID");
@@ -54,14 +168,20 @@ impl GoogleDriveFileSystem {
         let auth_token = match AuthToken::from_file(&gd_file).await {
             Ok(mut token) => {
                 if token.is_expired() {
-                    token = Self::auth_client()?.refresh_token(&mut token).await?;
+                    token = Self::auth_client()?
+                        .refresh_token(&mut token)
+                        .await
+                        .map_err(|e| Error::from(GDError::from(e)))?;
                     Self::save_token(&token, gd_file).await?;
                 }
                 token
             }
             Err(e) => {
                 info!("Cannot find google drive credentials: {}", e);
-                let token = Self::auth_client()?.new_auth_token().await?;
+                let token = Self::auth_client()?
+                    .new_auth_token()
+                    .await
+                    .map_err(|e| Error::from(GDError::from(e)))?;
                 Self::save_token(&token, gd_file).await?;
                 token
             }
@@ -78,21 +198,28 @@ impl GoogleDriveFileSystem {
     }
 
     fn auth_client() -> Result<OAuthPublicClient> {
-        Ok(OAuthPublicClient::new(
+        let client = OAuthPublicClient::new(
             GOOGLE_CLIENT_ID,
             GOOGLE_CLIENT_SECRET,
             Url::parse(GOOGLE_AUTH_URL).unwrap(),
             Url::parse(GOOGLE_TOKEN_URL).unwrap(),
-        )?
-        .add_scope("https://www.googleapis.com/auth/drive")
-        .add_scope("https://www.googleapis.com/auth/drive.metadata")
-        .add_scope("https://www.googleapis.com/auth/userinfo.email"))
+        );
+
+        match client {
+            Ok(client) => Ok(client
+                .add_scope("https://www.googleapis.com/auth/drive")
+                .add_scope("https://www.googleapis.com/auth/drive.metadata")
+                .add_scope("https://www.googleapis.com/auth/userinfo.email")),
+            Err(e) => Err(Error::from(GDError::from(e))),
+        }
     }
 
     async fn save_token(token: &AuthToken, path: impl AsRef<Path> + Debug) -> Result<()> {
         info!("Saving token to {:?}", path);
-        token.to_file(path).await?;
-        Ok(())
+        token
+            .to_file(path)
+            .await
+            .map_err(|e| GDError::from(e).into())
     }
 
     async fn auth_header(&self) -> Result<HeaderMap> {
@@ -574,59 +701,4 @@ impl FileSystem for GoogleDriveFileSystem {
     }
 }
 
-// https://developers.google.com/drive/api/guides/search-files
-// https://developers.google.com/drive/api/reference/rest/v3/files/list
-
-// TODO pub for debug
-#[derive(Debug, Deserialize, Clone)]
-pub struct GDFile {
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "mimeType")]
-    pub mime_type: String,
-    #[serde(rename = "modifiedTime")]
-    pub modified_time: DateTime<Utc>,
-    #[serde(rename = "sha256Checksum")]
-    pub sha256_checksum: Option<String>,
-    #[serde(rename = "webContentLink")]
-    pub download_url: Option<String>,
-}
-
-impl GDFile {
-    fn is_dir(&self) -> bool {
-        self.mime_type == GOOGLE_DRIVE_FOLDER_MIME_TYPE
-    }
-
-    fn assert_is_dir(&self) -> Result<()> {
-        if self.is_dir() {
-            Ok(())
-        } else {
-            Err(Error::ExpectDirectory(PathBuf::from(self.name.clone())))
-        }
-    }
-
-    fn content_hash(&self) -> Result<ContentHash> {
-        let Some(hash) = &self.sha256_checksum else {
-            return Err(Error::from(GDError::MissingField {
-                field: "sha256_checksum".to_string(),
-            }));
-        };
-        let Ok(content_hash) = hex::decode(hash) else {
-            return Err(Error::from(GDError::InvalidData {
-                field: "sha256_checksum".to_string(),
-                message: "Cannot decode hex value".to_string(),
-            }));
-        };
-        match content_hash.try_into() {
-            Ok(hash) => Ok(hash),
-            Err(_) => Err(Error::Unknown(anyhow!("Cannot convert hash"))),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct GDResp {
-    #[serde(rename = "nextPageToken")]
-    next_page_token: Option<String>,
-    files: Vec<GDFile>,
-}
+// endregion

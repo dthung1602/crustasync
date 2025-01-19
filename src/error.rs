@@ -2,7 +2,7 @@ use std::fmt::{Debug, Display, Formatter};
 use std::path::PathBuf;
 use std::string::FromUtf8Error;
 
-use crate::crustasyncfs::googledrive_error::GDError;
+use crate::crustasyncfs::googledrive::GDError;
 
 pub enum Error {
     // Generic errors

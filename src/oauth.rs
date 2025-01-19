@@ -1,9 +1,10 @@
 use std::collections::HashSet;
+use std::fmt::{Debug, Display, Formatter};
 use std::ops::Add;
 use std::path::Path;
 use std::process::Stdio;
+use std::string::FromUtf8Error;
 
-use anyhow::anyhow;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use chrono::{DateTime, TimeDelta, Utc};
@@ -14,7 +15,6 @@ use rand::RngCore;
 use reqwest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use thiserror;
 use tokio::fs;
 use tokio::io;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -22,20 +22,91 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
 use url::Url;
 
+// ------------------------------
+// region Error
+// ------------------------------
+
+pub enum AuthError {
+    RefreshError,
+    Permission { message: String },
+    InvalidResponse { message: String },
+    MissingField { field_name: String },
+    Serde(serde_json::Error),
+    Utf8(FromUtf8Error),
+    UnexpectedStatusCode { status_code: reqwest::StatusCode },
+    Reqwest(reqwest::Error),
+    Io(io::Error),
+}
+
+pub type Result<T> = std::result::Result<T, AuthError>;
+
+impl std::error::Error for AuthError {}
+
+impl Debug for AuthError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self, f)
+    }
+}
+
+impl Display for AuthError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        use AuthError::*;
+        match self {
+            RefreshError => write!(f, "RefreshError: refresh token expired"),
+            Permission { message } => write!(f, "PermissionError: {message}"),
+            InvalidResponse { message } => write!(f, "InvalidResponse: {message}"),
+            MissingField { field_name } => write!(f, "MissingField: {field_name}"),
+            Serde(err) => write!(f, "SerdeError: {err}"),
+            Utf8(err) => write!(f, "Utf8: {}", err),
+            UnexpectedStatusCode { status_code } => {
+                write!(f, "UnexpectedStatusCode: {status_code}")
+            }
+            Reqwest(e) => write!(f, "ReqwestError: {e}"),
+            Io(e) => write!(f, "IoError: {e}"),
+        }
+    }
+}
+
+impl From<reqwest::Error> for AuthError {
+    fn from(e: reqwest::Error) -> Self {
+        AuthError::Reqwest(e)
+    }
+}
+
+impl From<io::Error> for AuthError {
+    fn from(e: io::Error) -> Self {
+        AuthError::Io(e)
+    }
+}
+
+impl From<FromUtf8Error> for AuthError {
+    fn from(value: FromUtf8Error) -> Self {
+        AuthError::Utf8(value)
+    }
+}
+
+impl From<serde_json::Error> for AuthError {
+    fn from(value: serde_json::Error) -> Self {
+        AuthError::Serde(value)
+    }
+}
+
+impl From<url::ParseError> for AuthError {
+    fn from(_: url::ParseError) -> Self {
+        AuthError::InvalidResponse {
+            message: "Invalid URL".to_string(),
+        }
+    }
+}
+
+// endregion
+
+// ------------------------------
+// region Token
+// ------------------------------
+
 const OAUTH_STATE_LEN: usize = 128;
 const OAUTH_PKCE_LEN: usize = 32;
-
-#[derive(thiserror::Error, Debug)]
-pub enum AuthError {
-    #[error("refresh token expired")]
-    RefreshError,
-    #[error("invalid response")]
-    InvalidResponse,
-    #[error("unexpected status code")]
-    UnexpectedStatusCode { status_code: reqwest::StatusCode },
-    #[error("network error")]
-    NetworkError(#[from] reqwest::Error),
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TokenType {
@@ -59,8 +130,8 @@ impl AuthToken {
 
     pub async fn from_response(
         res: reqwest::Response,
-        refresh_token: Option<String>,
-    ) -> Result<Self, AuthError> {
+        old_refresh_token: Option<String>,
+    ) -> Result<Self> {
         let data: serde_json::Value = res.json().await?;
         debug!("Got response: {:#?}", data);
 
@@ -76,9 +147,14 @@ impl AuthToken {
             .map(|s| s.to_string())
             .collect();
 
-        let refresh_token = match data.get("refresh_token") {
-            Some(refresh_token) => refresh_token.as_str().unwrap().to_string(),
-            None => refresh_token.expect("No refresh token found"),
+        let refresh_token = if let Some(rt) = data.get("refresh_token") {
+            rt.as_str().unwrap().to_string()
+        } else if let Some(rt) = old_refresh_token {
+            rt
+        } else {
+            return Err(AuthError::MissingField {
+                field_name: "refresh_token".to_string(),
+            });
         };
 
         let token = AuthToken {
@@ -97,19 +173,25 @@ impl AuthToken {
         Ok(token)
     }
 
-    pub async fn from_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+    pub async fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let data = String::from_utf8(fs::read(path).await?)?;
         let token: AuthToken = serde_json::from_str(data.as_str())?;
         Ok(token)
     }
 
-    pub async fn to_file(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+    pub async fn to_file(&self, path: impl AsRef<Path>) -> Result<()> {
         let data = serde_json::to_string(self)?;
         fs::create_dir_all(path.as_ref().parent().unwrap()).await?;
         fs::write(path, data).await?;
         Ok(())
     }
 }
+
+// endregion
+
+// ------------------------------
+// region Client
+// ------------------------------
 
 #[derive(Debug)]
 pub struct OAuthPublicClient {
@@ -131,7 +213,7 @@ impl OAuthPublicClient {
         client_secret: impl ToString,
         auth_url: Url,
         token_url: Url,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self> {
         Ok(OAuthPublicClient {
             client_id: client_id.to_string(),
             client_secret: client_secret.to_string(),
@@ -158,7 +240,7 @@ impl OAuthPublicClient {
         self
     }
 
-    pub async fn new_auth_token(&mut self) -> anyhow::Result<AuthToken> {
+    pub async fn new_auth_token(&mut self) -> Result<AuthToken> {
         debug!("Start creating new auth token");
         self.start_redirect_listening().await?;
         self.open_auth_url_in_browser()?;
@@ -168,7 +250,7 @@ impl OAuthPublicClient {
         Ok(token)
     }
 
-    async fn start_redirect_listening(&mut self) -> anyhow::Result<()> {
+    async fn start_redirect_listening(&mut self) -> Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         self.localhost_redirect_port = listener.local_addr()?.port();
         self.tcp_listener = Some(listener);
@@ -179,7 +261,7 @@ impl OAuthPublicClient {
         Ok(())
     }
 
-    fn open_auth_url_in_browser(&self) -> anyhow::Result<()> {
+    fn open_auth_url_in_browser(&self) -> Result<()> {
         let full_auth_url = self.full_auth_url().to_string();
         debug!("Opening auth URL: {}", full_auth_url);
         // TODO support window
@@ -217,7 +299,7 @@ impl OAuthPublicClient {
         res
     }
 
-    async fn wait_for_auth_code(&mut self) -> anyhow::Result<()> {
+    async fn wait_for_auth_code(&mut self) -> Result<()> {
         debug!("Waiting for auth code");
 
         let (mut stream, _) = self.tcp_listener.as_ref().unwrap().accept().await?;
@@ -242,7 +324,7 @@ impl OAuthPublicClient {
         }
     }
 
-    fn parse_auth_code(&self, http_req_first_line: &str) -> anyhow::Result<String> {
+    fn parse_auth_code(&self, http_req_first_line: &str) -> Result<String> {
         debug!("Parsing response HTTP GET: {}", http_req_first_line);
         let mut parts = http_req_first_line.split(" ");
         let full_url = format!("http://127.0.0.1:8080{}", parts.nth(1).unwrap());
@@ -250,19 +332,26 @@ impl OAuthPublicClient {
         let mut parsed_url = Url::parse(&full_url)?;
 
         if let Some(err_msg) = Self::get_query_param(&mut parsed_url, "error") {
-            return Err(anyhow!(err_msg));
+            return Err(AuthError::InvalidResponse { message: err_msg });
         }
 
-        let granted_scopes =
-            Self::get_query_param(&mut parsed_url, "scope").expect("No scopes found");
+        let Some(granted_scopes) = Self::get_query_param(&mut parsed_url, "scope") else {
+            return Err(AuthError::MissingField {
+                field_name: "scope".to_string(),
+            });
+        };
+
         if !self.all_scopes_granted(&granted_scopes) {
-            return Err(anyhow!(
-                "Not all scopes granted. Only granted: {}",
-                granted_scopes
-            ));
+            return Err(AuthError::Permission {
+                message: format!("Not all scopes granted. Only granted: {granted_scopes}"),
+            });
         }
 
-        let code = Self::get_query_param(&mut parsed_url, "code").expect("No code found");
+        let Some(code) = Self::get_query_param(&mut parsed_url, "code") else {
+            return Err(AuthError::MissingField {
+                field_name: "code".to_string(),
+            });
+        };
         Ok(code)
     }
 
@@ -289,7 +378,7 @@ impl OAuthPublicClient {
         Ok(())
     }
 
-    async fn exchange_code(&self) -> Result<AuthToken, AuthError> {
+    async fn exchange_code(&self) -> Result<AuthToken> {
         debug!("Exchanging code");
         let auth_code = self.auth_code.as_ref().unwrap();
         let params = [
@@ -301,7 +390,7 @@ impl OAuthPublicClient {
         self.req_auth_server(&params).await
     }
 
-    pub async fn refresh_token(&mut self, token: &mut AuthToken) -> anyhow::Result<AuthToken> {
+    pub async fn refresh_token(&mut self, token: &mut AuthToken) -> Result<AuthToken> {
         debug!("Refreshing token");
         let params = [
             ("grant_type", &"refresh_token".to_string()),
@@ -314,15 +403,12 @@ impl OAuthPublicClient {
                     debug!("Refresh token expired. Requesting new token");
                     self.new_auth_token().await
                 }
-                _ => Err(anyhow!(err)),
+                _ => Err(err),
             },
         }
     }
 
-    async fn req_auth_server(
-        &self,
-        extra_params: &[(&str, &String)],
-    ) -> Result<AuthToken, AuthError> {
+    async fn req_auth_server(&self, extra_params: &[(&str, &String)]) -> Result<AuthToken> {
         let mut params = vec![
             ("client_id", &self.client_id),
             ("client_secret", &self.client_secret),
@@ -359,3 +445,5 @@ impl OAuthPublicClient {
         Ok(AuthToken::from_response(res, refresh_token).await?)
     }
 }
+
+// endregion

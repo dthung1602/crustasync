@@ -392,7 +392,7 @@ pub async fn process_tasks(
             };
             box_future
         });
-        try_join_all(futures).await.expect("Process tasks failed");
+        try_join_all(futures).await?;
     }
     info!("Processing tasks done");
     Ok(())
