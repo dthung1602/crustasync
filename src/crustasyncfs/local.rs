@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Result};
 use chrono::DateTime;
 use sha2::{Digest, Sha256};
 use tokio::fs;
 
 use crate::crustasyncfs::base::{FileSystem, Node, NodeType};
+use crate::error::{Error, Result};
 
 #[derive(Debug, Clone)]
 pub struct LocalFileSystem {
@@ -17,35 +17,30 @@ impl FileSystem for LocalFileSystem {
         let path_buf = self.abs_path(path);
         let parent = path_buf.parent().unwrap();
         fs::create_dir_all(parent).await?;
-        fs::write(path_buf, content)
-            .await
-            .map_err(anyhow::Error::from)
+        fs::write(path_buf, content).await?;
+        Ok(())
     }
 
     async fn read(&self, path: impl AsRef<Path>) -> Result<Vec<u8>> {
         let path_buf = self.abs_path(path);
-        fs::read(path_buf).await.map_err(anyhow::Error::from)
+        Ok(fs::read(path_buf).await?)
     }
 
     async fn mkdir(&mut self, path: impl AsRef<Path>) -> Result<()> {
         let path_buf = self.abs_path(path);
-        fs::create_dir_all(path_buf)
-            .await
-            .map_err(anyhow::Error::from)
+        fs::create_dir_all(path_buf).await?;
+        Ok(())
     }
 
     async fn rm(&mut self, path: impl AsRef<Path>) -> Result<()> {
         let path_buf = self.abs_path(path);
         let meta = fs::metadata(&path_buf).await?;
         if meta.is_dir() {
-            fs::remove_dir_all(&path_buf)
-                .await
-                .map_err(anyhow::Error::from)
+            fs::remove_dir_all(&path_buf).await?
         } else {
-            fs::remove_file(&path_buf)
-                .await
-                .map_err(anyhow::Error::from)
-        }
+            fs::remove_file(&path_buf).await?
+        };
+        Ok(())
     }
 
     async fn mv(&mut self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
@@ -57,7 +52,7 @@ impl FileSystem for LocalFileSystem {
         let root = self.build_node(&self.root_dir, "", true).await?;
 
         match root.node_type {
-            NodeType::File => Err(anyhow!("root is not a directory")),
+            NodeType::File => Err(Error::ExpectDirectory(self.root_dir.clone())),
             NodeType::Directory => Ok(root),
         }
     }
@@ -69,7 +64,7 @@ impl LocalFileSystem {
 
         let metadata = fs::metadata(&absolute_path).await?;
         if !metadata.is_dir() {
-            return Err(anyhow!("root is not a directory"));
+            return Err(Error::ExpectDirectory(absolute_path));
         }
 
         let local_fs = LocalFileSystem {

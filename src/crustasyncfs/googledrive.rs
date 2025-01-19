@@ -2,11 +2,10 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::iter::zip;
-use std::path;
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR};
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::anyhow;
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use itertools::Itertools;
@@ -21,6 +20,8 @@ use url::Url;
 
 use crate::cli::CLIOption;
 use crate::crustasyncfs::base::{ContentHash, FileSystem, Node, NodeType};
+use crate::crustasyncfs::googledrive_error::GDError;
+use crate::error::{Error, Result};
 use crate::oauth::{AuthToken, OAuthPublicClient};
 
 // Google client id for public client
@@ -42,7 +43,7 @@ pub struct GoogleDriveFileSystem {
     auth_token: AuthToken,
     http_client: ReqwestClient,
     root_dir: PathBuf,
-    pub(crate) path_to_meta: HashMap<PathBuf, GDFile>, // TODO temp pub for debug
+    pub path_to_meta: HashMap<PathBuf, GDFile>, // TODO temp pub for debug
 }
 
 impl GoogleDriveFileSystem {
@@ -80,8 +81,8 @@ impl GoogleDriveFileSystem {
         Ok(OAuthPublicClient::new(
             GOOGLE_CLIENT_ID,
             GOOGLE_CLIENT_SECRET,
-            Url::parse(GOOGLE_AUTH_URL)?,
-            Url::parse(GOOGLE_TOKEN_URL)?,
+            Url::parse(GOOGLE_AUTH_URL).unwrap(),
+            Url::parse(GOOGLE_TOKEN_URL).unwrap(),
         )?
         .add_scope("https://www.googleapis.com/auth/drive")
         .add_scope("https://www.googleapis.com/auth/drive.metadata")
@@ -97,7 +98,7 @@ impl GoogleDriveFileSystem {
     async fn auth_header(&self) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         let bearer = format!("Bearer {}", self.auth_token.access_token);
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&bearer)?);
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&bearer).unwrap());
         Ok(headers)
     }
 
@@ -131,8 +132,7 @@ impl GoogleDriveFileSystem {
                         Box::pin(self.build_node(&gd_file.id, &path, false, path_to_meta)).await
                     } else {
                         let child_path = path.join(&gd_file.name);
-                        let hash = gd_file.sha256_checksum.as_deref().unwrap();
-                        let content_hash: ContentHash = hex::decode(hash)?.try_into().unwrap();
+                        let content_hash = gd_file.content_hash()?;
                         let node = Node {
                             node_type: NodeType::File,
                             name: gd_file.name.clone(),
@@ -177,8 +177,7 @@ impl GoogleDriveFileSystem {
         }
 
         // handle file
-        let hash = meta.sha256_checksum.unwrap();
-        let content_hash: ContentHash = hex::decode(hash)?.try_into().unwrap();
+        let content_hash = meta.content_hash()?;
         let node = Node {
             node_type: NodeType::File,
             name: meta.name,
@@ -274,7 +273,7 @@ impl GoogleDriveFileSystem {
     }
 
     async fn get_root_dir_id(&self) -> Result<String> {
-        let root_dir = OsStr::new(path::MAIN_SEPARATOR_STR);
+        let root_dir = OsStr::new(MAIN_SEPARATOR_STR);
         let mut parent_dir_id = "root".to_string();
         for dir_name in self.root_dir.iter() {
             if dir_name != root_dir {
@@ -303,7 +302,9 @@ impl GoogleDriveFileSystem {
         if let Some(file) = res.files.first() {
             Ok(file.id.clone())
         } else {
-            Err(anyhow!("No files found"))
+            Err(Error::from(GDError::FileNotFound {
+                file: child_name.to_string(),
+            }))
         }
     }
 }
@@ -318,11 +319,11 @@ impl FileSystem for GoogleDriveFileSystem {
             .expect("Cannot get parent directory")
             .to_path_buf();
         let Some(parent_meta) = self.path_to_meta.get(&parent_pb) else {
-            return Err(anyhow!("Cannot find parent directory"));
+            return Err(Error::from(GDError::ParentNotFound {
+                file: path.display().to_string(),
+            }));
         };
-        if !parent_meta.is_dir() {
-            return Err(anyhow!("Parent is not a directory"));
-        }
+        parent_meta.assert_is_dir()?;
 
         // decide whether to create or update
         let gd_meta = self.path_to_meta.get(path);
@@ -353,7 +354,9 @@ impl FileSystem for GoogleDriveFileSystem {
             .error_for_status()?;
         let res_headers = res.headers();
         let Some(location) = res_headers.get("location") else {
-            return Err(anyhow!("No location header found"));
+            return Err(Error::from(GDError::MissingField {
+                field: "HTTP redirect location header".to_string(),
+            }));
         };
         debug!("Upload url {:?}", location);
 
@@ -430,7 +433,9 @@ impl FileSystem for GoogleDriveFileSystem {
             debug!("Make dir {child:?} with parent {parent:?}");
 
             let Some(parent_meta) = self.path_to_meta.get(parent) else {
-                return Err(anyhow!("Cannot find parent meta data {parent:?}"));
+                return Err(Error::from(GDError::ParentNotFound {
+                    file: parent.display().to_string(),
+                }));
             };
 
             debug!("Found parent meta {parent_meta:?}");
@@ -440,9 +445,7 @@ impl FileSystem for GoogleDriveFileSystem {
                     debug!("Directory {child:?} already exists");
                     continue;
                 }
-                return Err(anyhow!(format!(
-                    "{child:?} already exists and is not a directory"
-                )));
+                return Err(Error::ExpectDirectory(child.to_path_buf()));
             }
 
             let name = child.file_name().unwrap().to_str().unwrap();
@@ -476,7 +479,9 @@ impl FileSystem for GoogleDriveFileSystem {
     async fn rm(&mut self, path: impl AsRef<Path>) -> Result<()> {
         let path = path.as_ref();
         let Some(GDFile { id, .. }) = self.path_to_meta.get(path) else {
-            return Err(anyhow!("Cannot find file {path:?}"));
+            return Err(Error::from(GDError::FileNotFound {
+                file: path.display().to_string(),
+            }));
         };
         debug!("Removing file {path:?} with id {id:?}");
 
@@ -500,24 +505,30 @@ impl FileSystem for GoogleDriveFileSystem {
             self.rm(dest).await?;
         }
         let Some(src_meta) = self.path_to_meta.get(src) else {
-            return Err(anyhow!("Cannot find source {src:?}"));
+            return Err(Error::from(GDError::FileNotFound {
+                file: src.to_string_lossy().to_string(),
+            }));
         };
 
         debug!("Moving file {src:?} to {dest:?}");
 
         let src_parent = src.parent().expect("Cannot find parent src dir");
         let Some(src_parent_meta) = self.path_to_meta.get(src_parent) else {
-            return Err(anyhow!("Cannot find src parent {src_parent:?}"));
+            return Err(Error::from(GDError::ParentNotFound {
+                file: src_parent.to_string_lossy().to_string(),
+            }));
         };
         debug!("Src parent folder {src_parent:?} {src_parent_meta:?}");
 
         let dest_parent = dest.parent().expect("Cannot find parent dest dir");
         let Some(dest_parent_meta) = self.path_to_meta.get(dest_parent) else {
-            return Err(anyhow!("Cannot find destination parent {dest_parent:?}"));
+            return Err(Error::from(GDError::ParentNotFound {
+                file: dest_parent.to_string_lossy().to_string(),
+            }));
         };
         debug!("Dest parent folder {dest_parent:?} {dest_parent_meta:?}");
         if !dest_parent_meta.is_dir() {
-            return Err(anyhow!("Destination parent is not a directory"));
+            return Err(Error::ExpectDirectory(dest_parent.to_path_buf()));
         }
 
         let url = format!("{}/files/{}", GOOGLE_DRIVE_API_URL, src_meta.id);
@@ -557,7 +568,7 @@ impl FileSystem for GoogleDriveFileSystem {
         self.path_to_meta = path_to_meta.lock().await.clone();
 
         match node.node_type {
-            NodeType::File => Err(anyhow!("root is not a directory")),
+            NodeType::File => Err(Error::ExpectDirectory(self.root_dir.clone())),
             NodeType::Directory => Ok(node),
         }
     }
@@ -566,23 +577,50 @@ impl FileSystem for GoogleDriveFileSystem {
 // https://developers.google.com/drive/api/guides/search-files
 // https://developers.google.com/drive/api/reference/rest/v3/files/list
 
+// TODO pub for debug
 #[derive(Debug, Deserialize, Clone)]
-pub(crate) struct GDFile {
-    pub(crate) id: String,
-    pub(crate) name: String,
+pub struct GDFile {
+    pub id: String,
+    pub name: String,
     #[serde(rename = "mimeType")]
-    pub(crate) mime_type: String,
+    pub mime_type: String,
     #[serde(rename = "modifiedTime")]
-    pub(crate) modified_time: DateTime<Utc>,
+    pub modified_time: DateTime<Utc>,
     #[serde(rename = "sha256Checksum")]
-    pub(crate) sha256_checksum: Option<String>,
+    pub sha256_checksum: Option<String>,
     #[serde(rename = "webContentLink")]
-    pub(crate) download_url: Option<String>,
+    pub download_url: Option<String>,
 }
 
 impl GDFile {
     fn is_dir(&self) -> bool {
         self.mime_type == GOOGLE_DRIVE_FOLDER_MIME_TYPE
+    }
+
+    fn assert_is_dir(&self) -> Result<()> {
+        if self.is_dir() {
+            Ok(())
+        } else {
+            Err(Error::ExpectDirectory(PathBuf::from(self.name.clone())))
+        }
+    }
+
+    fn content_hash(&self) -> Result<ContentHash> {
+        let Some(hash) = &self.sha256_checksum else {
+            return Err(Error::from(GDError::MissingField {
+                field: "sha256_checksum".to_string(),
+            }));
+        };
+        let Ok(content_hash) = hex::decode(hash) else {
+            return Err(Error::from(GDError::InvalidData {
+                field: "sha256_checksum".to_string(),
+                message: "Cannot decode hex value".to_string(),
+            }));
+        };
+        match content_hash.try_into() {
+            Ok(hash) => Ok(hash),
+            Err(_) => Err(Error::Unknown(anyhow!("Cannot convert hash"))),
+        }
     }
 }
 

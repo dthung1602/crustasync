@@ -1,10 +1,11 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json as serde_lib;
+
+use crate::error::Result;
 
 // ------------------------------
 // region Node
