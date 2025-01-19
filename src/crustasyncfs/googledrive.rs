@@ -225,7 +225,11 @@ impl GoogleDriveFileSystem {
     async fn auth_header(&self) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         let bearer = format!("Bearer {}", self.auth_token.access_token);
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&bearer).unwrap());
+        let header_value = HeaderValue::from_str(&bearer).map_err(|e| GDError::InvalidData {
+            field: "Authorizaion header".to_string(),
+            message: e.to_string(),
+        })?;
+        headers.insert(AUTHORIZATION, header_value);
         Ok(headers)
     }
 
@@ -317,7 +321,7 @@ impl GoogleDriveFileSystem {
     }
 
     async fn metadata(&self, file_id: &str) -> Result<GDFile> {
-        let headers = self.auth_header().await.expect("Cannot build headers");
+        let headers = self.auth_header().await?;
         let query = [("fields", "id, name, mimeType, modifiedTime")];
         Ok(self
             .http_client
@@ -333,7 +337,7 @@ impl GoogleDriveFileSystem {
     async fn ls(&self, directory_id: &str) -> Result<Vec<GDFile>> {
         debug!("Listing files drives in {directory_id}");
 
-        let headers = self.auth_header().await.expect("Cannot build headers");
+        let headers = self.auth_header().await?;
         let mut query = vec![
             ("orderBy", "name".to_string()),
             ("pageSize", GOOGLE_DRIVE_LS_PAGE_SIZE.to_string()),
@@ -372,10 +376,7 @@ impl GoogleDriveFileSystem {
             .await?;
         debug!("Got response status: {}", res.status());
 
-        Ok(res
-            .json()
-            .await
-            .expect("Cannot deserialize JSON response to /files"))
+        Ok(res.json().await?)
     }
 
     fn gd_query(parent_id: impl ToString, file_name: Option<impl ToString>) -> String {
@@ -414,7 +415,7 @@ impl GoogleDriveFileSystem {
     }
 
     async fn get_child_dir_id(&self, parent_dir_id: &str, child_name: &str) -> Result<String> {
-        let headers = self.auth_header().await.expect("Cannot build header");
+        let headers = self.auth_header().await?;
         let query = vec![
             ("q", Self::gd_query(parent_dir_id, Some(child_name))),
             (
@@ -441,10 +442,12 @@ impl FileSystem for GoogleDriveFileSystem {
         let path = path.as_ref();
 
         // check parent is dir
-        let parent_pb = path
-            .parent()
-            .expect("Cannot get parent directory")
-            .to_path_buf();
+        let Some(path_parent) = path.parent() else {
+            return Err(Error::from(GDError::ParentNotFound {
+                file: path.display().to_string(),
+            }));
+        };
+        let parent_pb = path_parent.to_path_buf();
         let Some(parent_meta) = self.path_to_meta.get(&parent_pb) else {
             return Err(Error::from(GDError::ParentNotFound {
                 file: path.display().to_string(),
@@ -471,7 +474,7 @@ impl FileSystem for GoogleDriveFileSystem {
         };
 
         // make first request to acquire the upload session url
-        let headers = self.auth_header().await.expect("Cannot build headers");
+        let headers = self.auth_header().await?;
         let query = [("uploadType", "resumable")];
         let res = req_builder
             .headers(headers)
@@ -491,11 +494,10 @@ impl FileSystem for GoogleDriveFileSystem {
         // TODO upload in chunk for large file
         let content = Vec::from(content.as_ref());
         let content_len = content.len().to_string();
-        let mut headers = self.auth_header().await.expect("Cannot build headers");
-        headers.append(
-            "content-length",
-            HeaderValue::from_str(&content_len).expect("Cannot stringify content length"),
-        );
+        let (header_value) =
+            HeaderValue::from_str(&content_len).map_err(|e| Error::Unknown(anyhow!(e)))?;
+        let mut headers = self.auth_header().await?;
+        headers.append("content-length", header_value);
         let file_meta: serde_json::Value = self
             .http_client
             .put(location.to_str().unwrap())
@@ -505,8 +507,7 @@ impl FileSystem for GoogleDriveFileSystem {
             .await?
             .error_for_status()?
             .json()
-            .await
-            .expect("Cannot deserialize JSON response");
+            .await?;
         debug!("Upload response: {:?}", file_meta);
 
         // file_meta doesn't contain all fields we need
@@ -520,10 +521,11 @@ impl FileSystem for GoogleDriveFileSystem {
 
     async fn read(&self, path: impl AsRef<Path>) -> Result<Vec<u8>> {
         let pb = path.as_ref().to_path_buf();
-        let file_meta = self
-            .path_to_meta
-            .get(&pb)
-            .expect("Cannot find file id of path");
+        let Some(file_meta) = self.path_to_meta.get(&pb) else {
+            return Err(Error::from(GDError::FileNotFound {
+                file: pb.to_string_lossy().to_string(),
+            }));
+        };
         debug!("Reading file {:?}", file_meta);
 
         let url = format!("{}/files/{}", GOOGLE_DRIVE_API_URL, file_meta.id);
@@ -532,7 +534,7 @@ impl FileSystem for GoogleDriveFileSystem {
             ("acknowledgeAbuse", "true"),
             ("supportsAllDrives", "true"),
         );
-        let headers = self.auth_header().await.expect("Cannot build headers");
+        let headers = self.auth_header().await?;
 
         let response = self
             .http_client
@@ -540,8 +542,7 @@ impl FileSystem for GoogleDriveFileSystem {
             .headers(headers)
             .query(&query)
             .send()
-            .await
-            .expect("Cannot download file")
+            .await?
             .bytes()
             .await?;
         debug!("Downloaded file size: {}", response.len());
@@ -583,7 +584,7 @@ impl FileSystem for GoogleDriveFileSystem {
             });
             debug!("BODY: {body:?}");
             let url = format!("{GOOGLE_DRIVE_API_URL}/files");
-            let headers = self.auth_header().await.expect("Cannot build headers");
+            let headers = self.auth_header().await?;
             let query = [("fields", "id, name, mimeType, modifiedTime")];
             let response = self
                 .http_client
@@ -613,7 +614,7 @@ impl FileSystem for GoogleDriveFileSystem {
         debug!("Removing file {path:?} with id {id:?}");
 
         let url = format!("{GOOGLE_DRIVE_API_URL}/files/{id}");
-        let headers = self.auth_header().await.expect("Cannot build headers");
+        let headers = self.auth_header().await?;
         self.http_client
             .delete(url)
             .headers(headers)
@@ -639,17 +640,25 @@ impl FileSystem for GoogleDriveFileSystem {
 
         debug!("Moving file {src:?} to {dest:?}");
 
-        let src_parent = src.parent().expect("Cannot find parent src dir");
-        let Some(src_parent_meta) = self.path_to_meta.get(src_parent) else {
+        let Some(src_parent) = src.parent() else {
             return Err(Error::from(GDError::ParentNotFound {
+                file: src.display().to_string(),
+            }));
+        };
+        let Some(src_parent_meta) = self.path_to_meta.get(src_parent) else {
+            return Err(Error::from(GDError::FileNotFound {
                 file: src_parent.to_string_lossy().to_string(),
             }));
         };
         debug!("Src parent folder {src_parent:?} {src_parent_meta:?}");
 
-        let dest_parent = dest.parent().expect("Cannot find parent dest dir");
-        let Some(dest_parent_meta) = self.path_to_meta.get(dest_parent) else {
+        let Some(dest_parent) = dest.parent() else {
             return Err(Error::from(GDError::ParentNotFound {
+                file: dest.display().to_string(),
+            }));
+        };
+        let Some(dest_parent_meta) = self.path_to_meta.get(dest_parent) else {
+            return Err(Error::from(GDError::FileNotFound {
                 file: dest_parent.to_string_lossy().to_string(),
             }));
         };
@@ -659,7 +668,7 @@ impl FileSystem for GoogleDriveFileSystem {
         }
 
         let url = format!("{}/files/{}", GOOGLE_DRIVE_API_URL, src_meta.id);
-        let headers = self.auth_header().await.expect("Cannot build headers");
+        let headers = self.auth_header().await?;
         let query = [
             ("fields", "id, name, mimeType, modifiedTime, parents"),
             ("addParents", dest_parent_meta.id.as_str()),
