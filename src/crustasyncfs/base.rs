@@ -47,14 +47,12 @@ impl Node {
 }
 
 pub struct NodeIterator<'a> {
-    node: &'a Node,
     dequeue: VecDeque<&'a Node>,
 }
 
 impl<'a> NodeIterator<'a> {
     fn new(node: &'a Node) -> NodeIterator<'a> {
         NodeIterator {
-            node,
             dequeue: VecDeque::from(vec![node]),
         }
     }

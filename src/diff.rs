@@ -69,9 +69,9 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
     let mut queue_0 = vec![]; // move to tmp files
     let mut queue_1 = vec![]; // delete dirs whose going to be changed to files
     let mut queue_2 = vec![]; // create dir
-    let mut queue_3 = vec![]; // move
+    // queue_3: move
     let mut queue_4 = vec![]; // upload
-    let mut queue_5 = vec![]; // delete
+    // queue_5: delete
 
     let mut src_content_table = build_node_hash_table(src_tree);
     // let dst_path_table = build_path_hash_table(&dst_tree);
@@ -213,13 +213,13 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
     });
 
     // Put the remaining move task to queue 3
-    queue_3 = to_move.into_iter().map(|(_, (task, _))| task).collect();
+    let mut queue_3 = to_move.into_iter().map(|(_, (task, _))| task).collect();
     queue_3 = dedup_move_tasks(queue_3);
 
     // Put the remaining delete task to queue 5
     // Make sure that we don't delete any new files / dirs
     // and that we don't delete nested files / dirs that are already deleted in queue1
-    queue_5 = to_del
+    let mut queue_5 = to_del
         .into_iter()
         .filter_map(|(_, (task, _))| {
             if let Task::Delete { path } = &task {
