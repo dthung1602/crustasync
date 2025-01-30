@@ -381,6 +381,7 @@ pub async fn process_tasks(
     info!("Start processing tasks");
     for queue in queues {
         let futures = queue.iter().map(|task: &Task| {
+            // TODO avoid clone
             let dst_fs = dst_fs.clone();
             let box_future: Pin<Box<dyn Future<Output = Result<()>>>> = match task {
                 Task::Move { from, to } => Box::pin(process_move(dst_fs, from.clone(), to.clone())),
