@@ -15,7 +15,7 @@ pub struct LocalFileSystem {
 
 #[async_trait]
 impl FileSystem for LocalFileSystem {
-    async fn write(&mut self, path: &Path, content: &[u8]) -> Result<()> {
+    async fn write(&self, path: &Path, content: &[u8]) -> Result<()> {
         let path_buf = self.abs_path(path);
         let parent = path_buf.parent().unwrap();
         fs::create_dir_all(parent).await?;
@@ -23,18 +23,18 @@ impl FileSystem for LocalFileSystem {
         Ok(())
     }
 
-    async fn read(&mut self, path: &Path) -> Result<Vec<u8>> {
+    async fn read(&self, path: &Path) -> Result<Vec<u8>> {
         let path_buf = self.abs_path(path);
         Ok(fs::read(path_buf).await?)
     }
 
-    async fn mkdir(&mut self, path: &Path) -> Result<()> {
+    async fn mkdir(&self, path: &Path) -> Result<()> {
         let path_buf = self.abs_path(path);
         fs::create_dir_all(path_buf).await?;
         Ok(())
     }
 
-    async fn rm(&mut self, path: &Path) -> Result<()> {
+    async fn rm(&self, path: &Path) -> Result<()> {
         let path_buf = self.abs_path(path);
         let meta = fs::metadata(&path_buf).await?;
         if meta.is_dir() {
@@ -45,12 +45,12 @@ impl FileSystem for LocalFileSystem {
         Ok(())
     }
 
-    async fn mv(&mut self, from: &Path, to: &Path) -> Result<()> {
+    async fn mv(&self, from: &Path, to: &Path) -> Result<()> {
         fs::rename(self.abs_path(from), self.abs_path(to)).await?;
         Ok(())
     }
 
-    async fn build_tree(&mut self) -> Result<Node> {
+    async fn build_tree(&self) -> Result<Node> {
         let root = self.build_node(&self.root_dir, "".as_ref(), true).await?;
 
         match root.node_type {

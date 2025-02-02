@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use futures::future::{try_join_all, Future};
 use log::{debug, error, info};
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::crustasyncfs::base::{ContentHash, FileSystem, Node};
@@ -322,9 +321,9 @@ fn dedup_del_tasks(tasks: Vec<Task>) -> Vec<Task> {
         .collect()
 }
 
-async fn process_move(fs: Arc<RwLock<dyn FileSystem>>, from: &Path, to: &Path) -> Result<()> {
+async fn process_move(fs: Arc<dyn FileSystem>, from: &Path, to: &Path) -> Result<()> {
     info!("Start moving from {:?} to {:?}", from, to);
-    let res = fs.write().await.mv(&from, &to).await;
+    let res = fs.mv(&from, &to).await;
     if res.is_err() {
         error!("Error moving from {:?} to {:?}", from, to);
     } else {
@@ -334,18 +333,13 @@ async fn process_move(fs: Arc<RwLock<dyn FileSystem>>, from: &Path, to: &Path) -
 }
 
 async fn process_upload(
-    src_fs: Arc<RwLock<dyn FileSystem>>,
-    dst_fs: Arc<RwLock<dyn FileSystem>>,
+    src_fs: Arc<dyn FileSystem>,
+    dst_fs: Arc<dyn FileSystem>,
     path: &Path,
 ) -> Result<()> {
     info!("Start uploading to {:?}", path);
-    let mut src_fs = src_fs.write().await;
     let content = src_fs.read(&path).await?;
-    drop(src_fs);
-
-    let mut dst_fs = dst_fs.write().await;
     let res = dst_fs.write(&path, &content).await;
-    drop(dst_fs);
 
     if res.is_err() {
         error!("Error uploading to {:?}", path);
@@ -355,9 +349,9 @@ async fn process_upload(
     res
 }
 
-async fn process_create_dir(fs: Arc<RwLock<dyn FileSystem>>, path: &Path) -> Result<()> {
+async fn process_create_dir(fs: Arc<dyn FileSystem>, path: &Path) -> Result<()> {
     info!("Start creating dir to {:?}", path);
-    let res = fs.write().await.mkdir(&path).await;
+    let res = fs.mkdir(&path).await;
     if res.is_err() {
         error!("Error creating dir {:?}", path);
     } else {
@@ -366,9 +360,9 @@ async fn process_create_dir(fs: Arc<RwLock<dyn FileSystem>>, path: &Path) -> Res
     res
 }
 
-async fn process_delete(fs: Arc<RwLock<dyn FileSystem>>, path: &Path) -> Result<()> {
+async fn process_delete(fs: Arc<dyn FileSystem>, path: &Path) -> Result<()> {
     info!("Start deleting {:?}", path);
-    let res = fs.write().await.rm(&path).await;
+    let res = fs.rm(&path).await;
     if res.is_err() {
         error!("Error deleting {:?}", path);
     } else {
@@ -378,8 +372,8 @@ async fn process_delete(fs: Arc<RwLock<dyn FileSystem>>, path: &Path) -> Result<
 }
 
 pub async fn process_tasks(
-    src_fs: Arc<RwLock<dyn FileSystem>>,
-    dst_fs: Arc<RwLock<dyn FileSystem>>,
+    src_fs: Arc<dyn FileSystem>,
+    dst_fs: Arc<dyn FileSystem>,
     queues: &Vec<Vec<Task>>,
 ) -> Result<()> {
     info!("Start processing tasks");

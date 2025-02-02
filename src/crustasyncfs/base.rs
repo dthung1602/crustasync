@@ -95,21 +95,20 @@ impl<'a> IntoIterator for &'a Node {
 pub const CRUSTASYNC_CONFIG_FILE: &'static str = ".crustasync";
 
 #[async_trait]
-// TODO only put some part of fs in arc<lwlock>
 pub trait FileSystem {
-    async fn write(&mut self, path: &Path, content: &[u8]) -> Result<()>;
+    async fn write(&self, path: &Path, content: &[u8]) -> Result<()>;
 
-    async fn read(&mut self, path: &Path) -> Result<Vec<u8>>;
+    async fn read(&self, path: &Path) -> Result<Vec<u8>>;
 
-    async fn mkdir(&mut self, path: &Path) -> Result<()>;
+    async fn mkdir(&self, path: &Path) -> Result<()>;
 
-    async fn rm(&mut self, path: &Path) -> Result<()>;
+    async fn rm(&self, path: &Path) -> Result<()>;
 
-    async fn mv(&mut self, src: &Path, dest: &Path) -> Result<()>;
+    async fn mv(&self, src: &Path, dest: &Path) -> Result<()>;
 
-    async fn build_tree(&mut self) -> Result<Node>;
+    async fn build_tree(&self) -> Result<Node>;
 
-    async fn sync_fs_to_file(&mut self) -> Result<()> {
+    async fn sync_fs_to_file(&self) -> Result<()> {
         let tree = self.build_tree().await?;
         let serialized = serde_lib::to_string(&tree)?.into_bytes();
         self.write(CRUSTASYNC_CONFIG_FILE.as_ref(), serialized.as_ref())
@@ -117,7 +116,7 @@ pub trait FileSystem {
         Ok(())
     }
 
-    async fn read_fs_from_file(&mut self) -> Result<Node> {
+    async fn read_fs_from_file(&self) -> Result<Node> {
         let content = self.read(CRUSTASYNC_CONFIG_FILE.as_ref()).await?;
         let json_str = String::from_utf8(content)?;
         let tree: Node = serde_lib::from_str(&json_str)?;

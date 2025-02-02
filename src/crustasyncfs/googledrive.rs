@@ -17,7 +17,7 @@ use reqwest::Client as ReqwestClient;
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use url::Url;
 
 use crate::cli::CLIOption;
@@ -158,8 +158,8 @@ pub struct GoogleDriveFileSystem {
     auth_token: AuthToken,
     http_client: ReqwestClient,
     root_dir: PathBuf,
-    path_to_meta: HashMap<PathBuf, GDFile>,
-    tree: Option<Node>, // TODO need to save tree?
+    path_to_meta: Arc<RwLock<HashMap<PathBuf, GDFile>>>,
+    initialized: Arc<Mutex<bool>>,
 }
 
 impl GoogleDriveFileSystem {
@@ -195,8 +195,8 @@ impl GoogleDriveFileSystem {
             auth_token,
             http_client,
             root_dir: root_dir.to_path_buf(),
-            path_to_meta: HashMap::default(),
-            tree: None,
+            path_to_meta: Arc::new(RwLock::new(HashMap::default())),
+            initialized: Arc::new(Mutex::new(false)),
         })
     }
 
@@ -443,10 +443,12 @@ impl GoogleDriveFileSystem {
         }
     }
 
-    pub async fn init(&mut self) -> Result<()> {
-        if self.tree.is_none() {
+    pub async fn init(&self) -> Result<()> {
+        let mut init = self.initialized.lock().await;
+        if !(*init) {
             debug!("Initializing gd file system");
-            self.tree = Some(self.build_tree().await?)
+            self.build_tree().await?;
+            *init = true;
         }
         Ok(())
     }
@@ -454,7 +456,7 @@ impl GoogleDriveFileSystem {
 
 #[async_trait]
 impl FileSystem for GoogleDriveFileSystem {
-    async fn write(&mut self, path: &Path, content: &[u8]) -> Result<()> {
+    async fn write(&self, path: &Path, content: &[u8]) -> Result<()> {
         self.init().await?;
 
         // check parent is dir
@@ -463,8 +465,9 @@ impl FileSystem for GoogleDriveFileSystem {
                 file: path.display().to_string(),
             }));
         };
+        let path_to_meta = self.path_to_meta.read().await;
         let parent_pb = path_parent.to_path_buf();
-        let Some(parent_meta) = self.path_to_meta.get(&parent_pb) else {
+        let Some(parent_meta) = path_to_meta.get(&parent_pb) else {
             return Err(Error::from(GDError::ParentNotFound {
                 file: path.display().to_string(),
             }));
@@ -472,7 +475,7 @@ impl FileSystem for GoogleDriveFileSystem {
         parent_meta.assert_is_dir()?;
 
         // decide whether to create or update
-        let gd_meta = self.path_to_meta.get(path);
+        let gd_meta = path_to_meta.get(path);
         let req_builder = if let Some(gd_meta) = gd_meta {
             debug!("Updating file at {}", path.display());
             self.http_client
@@ -488,6 +491,7 @@ impl FileSystem for GoogleDriveFileSystem {
                 .post(GOOGLE_DRIVE_UPLOAD_API_URL)
                 .json(&body)
         };
+        drop(path_to_meta);
 
         // make first request to acquire the upload session url
         let headers = self.auth_header().await?;
@@ -510,7 +514,8 @@ impl FileSystem for GoogleDriveFileSystem {
         // TODO upload in chunk for large file
         let content = Vec::from(content.as_ref());
         let content_len = content.len().to_string();
-        let header_value = HeaderValue::from_str(&content_len).map_err(|e| Error::Unknown(anyhow!(e)))?;
+        let header_value =
+            HeaderValue::from_str(&content_len).map_err(|e| Error::Unknown(anyhow!(e)))?;
         let mut headers = self.auth_header().await?;
         headers.append("content-length", header_value);
         let file_meta: serde_json::Value = self
@@ -529,16 +534,20 @@ impl FileSystem for GoogleDriveFileSystem {
         // request again for metadata
         let file_id = file_meta.get("id").unwrap().as_str().unwrap();
         let file_meta = self.metadata(file_id).await?;
-        self.path_to_meta.insert(path.to_path_buf(), file_meta);
+        self.path_to_meta
+            .write()
+            .await
+            .insert(path.to_path_buf(), file_meta);
 
         Ok(())
     }
 
-    async fn read(&mut self, path: &Path) -> Result<Vec<u8>> {
+    async fn read(&self, path: &Path) -> Result<Vec<u8>> {
         self.init().await?;
 
         let pb = path.to_path_buf();
-        let Some(file_meta) = self.path_to_meta.get(&pb) else {
+        let path_to_meta = self.path_to_meta.read().await;
+        let Some(file_meta) = path_to_meta.get(&pb) else {
             return Err(Error::from(GDError::FileNotFound {
                 file: pb.to_string_lossy().to_string(),
             }));
@@ -551,6 +560,7 @@ impl FileSystem for GoogleDriveFileSystem {
             ("acknowledgeAbuse", "true"),
             ("supportsAllDrives", "true"),
         );
+        drop(path_to_meta);
         let headers = self.auth_header().await?;
 
         let response = self
@@ -566,7 +576,7 @@ impl FileSystem for GoogleDriveFileSystem {
         Ok(response.into())
     }
 
-    async fn mkdir(&mut self, path: &Path) -> Result<()> {
+    async fn mkdir(&self, path: &Path) -> Result<()> {
         self.init().await?;
 
         let parent_path = path.parent().unwrap();
@@ -578,7 +588,8 @@ impl FileSystem for GoogleDriveFileSystem {
         for (parent, child) in parent_child_pairs {
             debug!("Make dir {child:?} with parent {parent:?}");
 
-            let Some(parent_meta) = self.path_to_meta.get(parent) else {
+            let path_to_meta = self.path_to_meta.read().await;
+            let Some(parent_meta) = path_to_meta.get(parent) else {
                 return Err(Error::from(GDError::ParentNotFound {
                     file: parent.display().to_string(),
                 }));
@@ -586,7 +597,7 @@ impl FileSystem for GoogleDriveFileSystem {
 
             debug!("Found parent meta {parent_meta:?}");
 
-            if let Some(child_meta) = self.path_to_meta.get(child) {
+            if let Some(child_meta) = path_to_meta.get(child) {
                 if child_meta.is_dir() {
                     debug!("Directory {child:?} already exists");
                     continue;
@@ -601,6 +612,7 @@ impl FileSystem for GoogleDriveFileSystem {
                 "mimeType": GOOGLE_DRIVE_FOLDER_MIME_TYPE
             });
             debug!("BODY: {body:?}");
+            drop(path_to_meta);
             let url = format!("{GOOGLE_DRIVE_API_URL}/files");
             let headers = self.auth_header().await?;
             let query = [("fields", "id, name, mimeType, modifiedTime")];
@@ -616,16 +628,19 @@ impl FileSystem for GoogleDriveFileSystem {
 
             let child_meta = response.json().await?;
             debug!("Got response content {:?}", child_meta);
-            self.path_to_meta.insert(child.to_path_buf(), child_meta);
+            let mut path_to_meta = self.path_to_meta.write().await;
+            path_to_meta.insert(child.to_path_buf(), child_meta);
+            drop(path_to_meta);
         }
 
         Ok(())
     }
 
-    async fn rm(&mut self, path: &Path) -> Result<()> {
+    async fn rm(&self, path: &Path) -> Result<()> {
         self.init().await?;
 
-        let Some(GDFile { id, .. }) = self.path_to_meta.get(path) else {
+        let path_to_meta = self.path_to_meta.read().await;
+        let Some(GDFile { id, .. }) = path_to_meta.get(path) else {
             return Err(Error::from(GDError::FileNotFound {
                 file: path.display().to_string(),
             }));
@@ -633,6 +648,7 @@ impl FileSystem for GoogleDriveFileSystem {
         debug!("Removing file {path:?} with id {id:?}");
 
         let url = format!("{GOOGLE_DRIVE_API_URL}/files/{id}");
+        drop(path_to_meta);
         let headers = self.auth_header().await?;
         self.http_client
             .delete(url)
@@ -640,18 +656,21 @@ impl FileSystem for GoogleDriveFileSystem {
             .send()
             .await?
             .error_for_status()?;
-        self.path_to_meta.remove(path);
+
+        let mut path_to_meta = self.path_to_meta.write().await;
+        path_to_meta.remove(path);
         Ok(())
     }
 
-    async fn mv(&mut self, src: &Path, dest: &Path) -> Result<()> {
+    async fn mv(&self, src: &Path, dest: &Path) -> Result<()> {
         self.init().await?;
 
-        if self.path_to_meta.contains_key(dest) {
+        let path_to_meta = self.path_to_meta.read().await;
+        if path_to_meta.contains_key(dest) {
             debug!("File/folder at {dest:?} exists. Removing");
             self.rm(dest).await?;
         }
-        let Some(src_meta) = self.path_to_meta.get(src) else {
+        let Some(src_meta) = path_to_meta.get(src) else {
             return Err(Error::from(GDError::FileNotFound {
                 file: src.to_string_lossy().to_string(),
             }));
@@ -664,7 +683,7 @@ impl FileSystem for GoogleDriveFileSystem {
                 file: src.display().to_string(),
             }));
         };
-        let Some(src_parent_meta) = self.path_to_meta.get(src_parent) else {
+        let Some(src_parent_meta) = path_to_meta.get(src_parent) else {
             return Err(Error::from(GDError::FileNotFound {
                 file: src_parent.to_string_lossy().to_string(),
             }));
@@ -676,7 +695,7 @@ impl FileSystem for GoogleDriveFileSystem {
                 file: dest.display().to_string(),
             }));
         };
-        let Some(dest_parent_meta) = self.path_to_meta.get(dest_parent) else {
+        let Some(dest_parent_meta) = path_to_meta.get(dest_parent) else {
             return Err(Error::from(GDError::FileNotFound {
                 file: dest_parent.to_string_lossy().to_string(),
             }));
@@ -687,15 +706,19 @@ impl FileSystem for GoogleDriveFileSystem {
         }
 
         let url = format!("{}/files/{}", GOOGLE_DRIVE_API_URL, src_meta.id);
-        let headers = self.auth_header().await?;
         let query = [
-            ("fields", "id, name, mimeType, modifiedTime, parents"),
-            ("addParents", dest_parent_meta.id.as_str()),
-            ("removeParents", src_parent_meta.id.as_str()),
+            (
+                "fields",
+                "id, name, mimeType, modifiedTime, parents".to_string(),
+            ),
+            ("addParents", dest_parent_meta.id.clone()),
+            ("removeParents", src_parent_meta.id.clone()),
         ];
         let body = json!({
             "name": dest.file_name().unwrap().to_str().unwrap(),
         });
+        drop(path_to_meta);
+        let headers = self.auth_header().await?;
         let res = self
             .http_client
             .patch(url)
@@ -706,12 +729,13 @@ impl FileSystem for GoogleDriveFileSystem {
             .await?;
 
         let new_meta: GDFile = res.json().await?;
-        self.path_to_meta.remove(src);
-        self.path_to_meta.insert(dest.to_path_buf(), new_meta);
+        let mut path_to_meta = self.path_to_meta.write().await;
+        path_to_meta.remove(src);
+        path_to_meta.insert(dest.to_path_buf(), new_meta);
         Ok(())
     }
 
-    async fn build_tree(&mut self) -> Result<Node> {
+    async fn build_tree(&self) -> Result<Node> {
         let root_dir_id = self.get_root_dir_id().await?;
         debug!("Root dir id: {}", root_dir_id);
 
@@ -720,7 +744,10 @@ impl FileSystem for GoogleDriveFileSystem {
         let node = self
             .build_node(&root_dir_id, "".as_ref(), true, path_to_meta.clone())
             .await?;
-        self.path_to_meta = path_to_meta.lock().await.clone();
+
+        let mut self_ptm = self.path_to_meta.write().await;
+        self_ptm.clear();
+        self_ptm.extend(path_to_meta.lock().await.drain());
 
         match node.node_type {
             NodeType::File => Err(Error::ExpectDirectory(self.root_dir.clone())),
