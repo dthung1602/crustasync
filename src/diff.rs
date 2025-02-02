@@ -4,9 +4,11 @@ use std::fmt::Debug;
 use std::ops::Add;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 
 use futures::future::{try_join_all, Future};
 use log::{debug, error, info};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::crustasyncfs::base::{ContentHash, FileSystem, Node};
@@ -69,9 +71,9 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
     let mut queue_0 = vec![]; // move to tmp files
     let mut queue_1 = vec![]; // delete dirs whose going to be changed to files
     let mut queue_2 = vec![]; // create dir
-    // queue_3: move
+                              // queue_3: move
     let mut queue_4 = vec![]; // upload
-    // queue_5: delete
+                              // queue_5: delete
 
     let mut src_content_table = build_node_hash_table(src_tree);
     // let dst_path_table = build_path_hash_table(&dst_tree);
@@ -320,13 +322,9 @@ fn dedup_del_tasks(tasks: Vec<Task>) -> Vec<Task> {
         .collect()
 }
 
-async fn process_move(
-    mut fs: impl FileSystem,
-    from: impl AsRef<Path> + Debug,
-    to: impl AsRef<Path> + Debug,
-) -> Result<()> {
+async fn process_move(fs: Arc<RwLock<dyn FileSystem>>, from: &Path, to: &Path) -> Result<()> {
     info!("Start moving from {:?} to {:?}", from, to);
-    let res = fs.mv(&from, &to).await;
+    let res = fs.write().await.mv(&from, &to).await;
     if res.is_err() {
         error!("Error moving from {:?} to {:?}", from, to);
     } else {
@@ -336,13 +334,19 @@ async fn process_move(
 }
 
 async fn process_upload(
-    src_fs: impl FileSystem,
-    mut dst_fs: impl FileSystem,
-    path: impl AsRef<Path> + Debug,
+    src_fs: Arc<RwLock<dyn FileSystem>>,
+    dst_fs: Arc<RwLock<dyn FileSystem>>,
+    path: &Path,
 ) -> Result<()> {
     info!("Start uploading to {:?}", path);
+    let mut src_fs = src_fs.write().await;
     let content = src_fs.read(&path).await?;
-    let res = dst_fs.write(&path, content).await;
+    drop(src_fs);
+
+    let mut dst_fs = dst_fs.write().await;
+    let res = dst_fs.write(&path, &content).await;
+    drop(dst_fs);
+
     if res.is_err() {
         error!("Error uploading to {:?}", path);
     } else {
@@ -351,9 +355,9 @@ async fn process_upload(
     res
 }
 
-async fn process_create_dir(mut fs: impl FileSystem, path: impl AsRef<Path> + Debug) -> Result<()> {
+async fn process_create_dir(fs: Arc<RwLock<dyn FileSystem>>, path: &Path) -> Result<()> {
     info!("Start creating dir to {:?}", path);
-    let res = fs.mkdir(&path).await;
+    let res = fs.write().await.mkdir(&path).await;
     if res.is_err() {
         error!("Error creating dir {:?}", path);
     } else {
@@ -362,9 +366,9 @@ async fn process_create_dir(mut fs: impl FileSystem, path: impl AsRef<Path> + De
     res
 }
 
-async fn process_delete(mut fs: impl FileSystem, path: impl AsRef<Path> + Debug) -> Result<()> {
+async fn process_delete(fs: Arc<RwLock<dyn FileSystem>>, path: &Path) -> Result<()> {
     info!("Start deleting {:?}", path);
-    let res = fs.rm(&path).await;
+    let res = fs.write().await.rm(&path).await;
     if res.is_err() {
         error!("Error deleting {:?}", path);
     } else {
@@ -374,8 +378,8 @@ async fn process_delete(mut fs: impl FileSystem, path: impl AsRef<Path> + Debug)
 }
 
 pub async fn process_tasks(
-    src_fs: impl FileSystem,
-    dst_fs: impl FileSystem,
+    src_fs: Arc<RwLock<dyn FileSystem>>,
+    dst_fs: Arc<RwLock<dyn FileSystem>>,
     queues: &Vec<Vec<Task>>,
 ) -> Result<()> {
     info!("Start processing tasks");
@@ -384,12 +388,10 @@ pub async fn process_tasks(
             // TODO avoid clone
             let dst_fs = dst_fs.clone();
             let box_future: Pin<Box<dyn Future<Output = Result<()>>>> = match task {
-                Task::Move { from, to } => Box::pin(process_move(dst_fs, from.clone(), to.clone())),
-                Task::Upload { path } => {
-                    Box::pin(process_upload(src_fs.clone(), dst_fs, path.clone()))
-                }
-                Task::CreateDir { path } => Box::pin(process_create_dir(dst_fs, path.clone())),
-                Task::Delete { path } => Box::pin(process_delete(dst_fs, path.clone())),
+                Task::Move { from, to } => Box::pin(process_move(dst_fs, &from, &to)),
+                Task::Upload { path } => Box::pin(process_upload(src_fs.clone(), dst_fs, &path)),
+                Task::CreateDir { path } => Box::pin(process_create_dir(dst_fs, &path)),
+                Task::Delete { path } => Box::pin(process_delete(dst_fs, &path)),
             };
             box_future
         });

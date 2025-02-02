@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 
+use async_trait::async_trait;
 use chrono::DateTime;
 use sha2::{Digest, Sha256};
 use tokio::fs;
 
-use crate::crustasyncfs::base::{FileSystem, Node, NodeType};
+use crate::crustasyncfs::base::{FileSystem, Node, NodeType, CRUSTASYNC_CONFIG_FILE};
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone)]
@@ -12,8 +13,9 @@ pub struct LocalFileSystem {
     pub(crate) root_dir: PathBuf,
 }
 
+#[async_trait]
 impl FileSystem for LocalFileSystem {
-    async fn write(&mut self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()> {
+    async fn write(&mut self, path: &Path, content: &[u8]) -> Result<()> {
         let path_buf = self.abs_path(path);
         let parent = path_buf.parent().unwrap();
         fs::create_dir_all(parent).await?;
@@ -21,18 +23,18 @@ impl FileSystem for LocalFileSystem {
         Ok(())
     }
 
-    async fn read(&self, path: impl AsRef<Path>) -> Result<Vec<u8>> {
+    async fn read(&mut self, path: &Path) -> Result<Vec<u8>> {
         let path_buf = self.abs_path(path);
         Ok(fs::read(path_buf).await?)
     }
 
-    async fn mkdir(&mut self, path: impl AsRef<Path>) -> Result<()> {
+    async fn mkdir(&mut self, path: &Path) -> Result<()> {
         let path_buf = self.abs_path(path);
         fs::create_dir_all(path_buf).await?;
         Ok(())
     }
 
-    async fn rm(&mut self, path: impl AsRef<Path>) -> Result<()> {
+    async fn rm(&mut self, path: &Path) -> Result<()> {
         let path_buf = self.abs_path(path);
         let meta = fs::metadata(&path_buf).await?;
         if meta.is_dir() {
@@ -43,13 +45,13 @@ impl FileSystem for LocalFileSystem {
         Ok(())
     }
 
-    async fn mv(&mut self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
+    async fn mv(&mut self, from: &Path, to: &Path) -> Result<()> {
         fs::rename(self.abs_path(from), self.abs_path(to)).await?;
         Ok(())
     }
 
     async fn build_tree(&mut self) -> Result<Node> {
-        let root = self.build_node(&self.root_dir, "", true).await?;
+        let root = self.build_node(&self.root_dir, "".as_ref(), true).await?;
 
         match root.node_type {
             NodeType::File => Err(Error::ExpectDirectory(self.root_dir.clone())),
@@ -59,7 +61,7 @@ impl FileSystem for LocalFileSystem {
 }
 
 impl LocalFileSystem {
-    pub async fn new(root_dir: impl AsRef<Path>) -> Result<LocalFileSystem> {
+    pub async fn new(root_dir: &Path) -> Result<LocalFileSystem> {
         let absolute_path = fs::canonicalize(root_dir).await?;
 
         let metadata = fs::metadata(&absolute_path).await?;
@@ -73,23 +75,18 @@ impl LocalFileSystem {
         Ok(local_fs)
     }
 
-    fn abs_path(&self, relative_path: impl AsRef<Path>) -> PathBuf {
+    fn abs_path(&self, relative_path: &Path) -> PathBuf {
         self.root_dir.join(relative_path)
     }
 
-    async fn build_node(
-        &self,
-        abs_path: impl AsRef<Path>,
-        parent_path: impl AsRef<Path>,
-        is_root: bool,
-    ) -> Result<Node> {
+    async fn build_node(&self, abs_path: &Path, parent_path: &Path, is_root: bool) -> Result<Node> {
         let meta = fs::metadata(&abs_path).await?;
         let updated_at = DateTime::from(meta.modified()?);
-        let name = String::from(abs_path.as_ref().file_name().unwrap().to_str().unwrap());
+        let name = String::from(abs_path.file_name().unwrap().to_str().unwrap());
         let path = if is_root {
             PathBuf::from("")
         } else {
-            parent_path.as_ref().join(&name)
+            parent_path.to_path_buf().join(&name)
         };
 
         if meta.is_dir() {
@@ -97,11 +94,11 @@ impl LocalFileSystem {
             let mut children = vec![];
 
             while let Some(entry) = result.next_entry().await? {
-                if is_root && entry.file_name().to_str().unwrap() == Self::CRUSTASYNC_CONFIG_FILE {
+                if is_root && entry.file_name().to_str().unwrap() == CRUSTASYNC_CONFIG_FILE {
                     continue;
                 }
                 let entry_path = entry.path();
-                let node = Box::pin(self.build_node(entry_path, &path, false)).await?;
+                let node = Box::pin(self.build_node(&entry_path, &path, false)).await?;
                 children.push(node);
             }
 

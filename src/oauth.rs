@@ -229,7 +229,7 @@ impl OAuthPublicClient {
     }
 
     fn generate_random_str(len: usize) -> String {
-        let mut random_gen = rand::thread_rng();
+        let mut random_gen = rand::rng();
         let mut buf = vec![0; len];
         random_gen.fill_bytes(&mut buf);
         URL_SAFE_NO_PAD.encode(&buf).to_string()

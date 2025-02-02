@@ -3,10 +3,11 @@ use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::fmt::Formatter;
 use std::iter::zip;
-use std::path::{Display, Path, PathBuf, MAIN_SEPARATOR_STR};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR};
 use std::sync::Arc;
 
 use anyhow::anyhow;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::future::join_all;
 use itertools::Itertools;
@@ -20,7 +21,7 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use crate::cli::CLIOption;
-use crate::crustasyncfs::base::{ContentHash, FileSystem, Node, NodeType};
+use crate::crustasyncfs::base::{ContentHash, FileSystem, Node, NodeType, CRUSTASYNC_CONFIG_FILE};
 use crate::error::{Error, Result};
 use crate::oauth::AuthError;
 use crate::oauth::{AuthToken, OAuthPublicClient};
@@ -157,11 +158,12 @@ pub struct GoogleDriveFileSystem {
     auth_token: AuthToken,
     http_client: ReqwestClient,
     root_dir: PathBuf,
-    pub path_to_meta: HashMap<PathBuf, GDFile>, // TODO temp pub for debug
+    path_to_meta: HashMap<PathBuf, GDFile>,
+    tree: Option<Node>, // TODO need to save tree?
 }
 
 impl GoogleDriveFileSystem {
-    pub async fn new(opt: &CLIOption, root_dir: impl AsRef<Path>) -> Result<Self> {
+    pub async fn new(opt: &CLIOption, root_dir: &Path) -> Result<Self> {
         let mut gd_file = opt.config_dir.clone();
         gd_file.push(CONFIG_FILE_NAME);
 
@@ -172,7 +174,7 @@ impl GoogleDriveFileSystem {
                         .refresh_token(&mut token)
                         .await
                         .map_err(|e| Error::from(GDError::from(e)))?;
-                    Self::save_token(&token, gd_file).await?;
+                    Self::save_token(&token, &gd_file).await?;
                 }
                 token
             }
@@ -182,7 +184,7 @@ impl GoogleDriveFileSystem {
                     .new_auth_token()
                     .await
                     .map_err(|e| Error::from(GDError::from(e)))?;
-                Self::save_token(&token, gd_file).await?;
+                Self::save_token(&token, &gd_file).await?;
                 token
             }
         };
@@ -192,8 +194,9 @@ impl GoogleDriveFileSystem {
         Ok(Self {
             auth_token,
             http_client,
-            root_dir: root_dir.as_ref().to_path_buf(),
+            root_dir: root_dir.to_path_buf(),
             path_to_meta: HashMap::default(),
+            tree: None,
         })
     }
 
@@ -214,7 +217,7 @@ impl GoogleDriveFileSystem {
         }
     }
 
-    async fn save_token(token: &AuthToken, path: impl AsRef<Path> + Debug) -> Result<()> {
+    async fn save_token(token: &AuthToken, path: &Path) -> Result<()> {
         info!("Saving token to {:?}", path);
         token
             .to_file(path)
@@ -236,7 +239,7 @@ impl GoogleDriveFileSystem {
     async fn build_node(
         &self,
         node_id: &str,
-        parent_path: impl AsRef<Path>,
+        parent_path: &Path,
         is_root: bool,
         path_to_meta: Arc<Mutex<HashMap<PathBuf, GDFile>>>,
     ) -> Result<Node> {
@@ -245,7 +248,7 @@ impl GoogleDriveFileSystem {
         let path = if is_root {
             PathBuf::from("")
         } else {
-            parent_path.as_ref().join(&meta.name)
+            parent_path.to_path_buf().join(&meta.name)
         };
 
         path_to_meta.lock().await.insert(path.clone(), meta.clone());
@@ -256,7 +259,6 @@ impl GoogleDriveFileSystem {
 
             let futures: Vec<_> = children
                 .into_iter()
-                .filter(|gd_file| !(is_root && gd_file.name == Self::CRUSTASYNC_CONFIG_FILE))
                 .map(|gd_file| async {
                     if gd_file.is_dir() {
                         let path_to_meta = path_to_meta.clone();
@@ -281,7 +283,12 @@ impl GoogleDriveFileSystem {
             let mut children = vec![];
             for res in join_all(futures).await {
                 match res {
-                    Ok(node) => children.push(node),
+                    Ok(node) => {
+                        if !(is_root && node.name == CRUSTASYNC_CONFIG_FILE) {
+                            // still update .crustasync config id, path, but do not include in tree
+                            children.push(node)
+                        }
+                    }
                     Err(e) => return Err(e),
                 }
             }
@@ -435,11 +442,20 @@ impl GoogleDriveFileSystem {
             }))
         }
     }
+
+    pub async fn init(&mut self) -> Result<()> {
+        if self.tree.is_none() {
+            debug!("Initializing gd file system");
+            self.tree = Some(self.build_tree().await?)
+        }
+        Ok(())
+    }
 }
 
+#[async_trait]
 impl FileSystem for GoogleDriveFileSystem {
-    async fn write(&mut self, path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> Result<()> {
-        let path = path.as_ref();
+    async fn write(&mut self, path: &Path, content: &[u8]) -> Result<()> {
+        self.init().await?;
 
         // check parent is dir
         let Some(path_parent) = path.parent() else {
@@ -494,8 +510,7 @@ impl FileSystem for GoogleDriveFileSystem {
         // TODO upload in chunk for large file
         let content = Vec::from(content.as_ref());
         let content_len = content.len().to_string();
-        let (header_value) =
-            HeaderValue::from_str(&content_len).map_err(|e| Error::Unknown(anyhow!(e)))?;
+        let header_value = HeaderValue::from_str(&content_len).map_err(|e| Error::Unknown(anyhow!(e)))?;
         let mut headers = self.auth_header().await?;
         headers.append("content-length", header_value);
         let file_meta: serde_json::Value = self
@@ -519,8 +534,10 @@ impl FileSystem for GoogleDriveFileSystem {
         Ok(())
     }
 
-    async fn read(&self, path: impl AsRef<Path>) -> Result<Vec<u8>> {
-        let pb = path.as_ref().to_path_buf();
+    async fn read(&mut self, path: &Path) -> Result<Vec<u8>> {
+        self.init().await?;
+
+        let pb = path.to_path_buf();
         let Some(file_meta) = self.path_to_meta.get(&pb) else {
             return Err(Error::from(GDError::FileNotFound {
                 file: pb.to_string_lossy().to_string(),
@@ -549,8 +566,9 @@ impl FileSystem for GoogleDriveFileSystem {
         Ok(response.into())
     }
 
-    async fn mkdir(&mut self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
+    async fn mkdir(&mut self, path: &Path) -> Result<()> {
+        self.init().await?;
+
         let parent_path = path.parent().unwrap();
         let parent_child_pairs = zip(parent_path.ancestors(), path.ancestors())
             .collect_vec()
@@ -604,8 +622,9 @@ impl FileSystem for GoogleDriveFileSystem {
         Ok(())
     }
 
-    async fn rm(&mut self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
+    async fn rm(&mut self, path: &Path) -> Result<()> {
+        self.init().await?;
+
         let Some(GDFile { id, .. }) = self.path_to_meta.get(path) else {
             return Err(Error::from(GDError::FileNotFound {
                 file: path.display().to_string(),
@@ -625,9 +644,9 @@ impl FileSystem for GoogleDriveFileSystem {
         Ok(())
     }
 
-    async fn mv(&mut self, src: impl AsRef<Path>, dest: impl AsRef<Path>) -> Result<()> {
-        let src = src.as_ref();
-        let dest = dest.as_ref();
+    async fn mv(&mut self, src: &Path, dest: &Path) -> Result<()> {
+        self.init().await?;
+
         if self.path_to_meta.contains_key(dest) {
             debug!("File/folder at {dest:?} exists. Removing");
             self.rm(dest).await?;
@@ -699,7 +718,7 @@ impl FileSystem for GoogleDriveFileSystem {
         // TODO consider make self.path_to_meta to arc mut
         let path_to_meta = Arc::new(Mutex::new(HashMap::new()));
         let node = self
-            .build_node(&root_dir_id, "", true, path_to_meta.clone())
+            .build_node(&root_dir_id, "".as_ref(), true, path_to_meta.clone())
             .await?;
         self.path_to_meta = path_to_meta.lock().await.clone();
 
