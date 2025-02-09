@@ -109,7 +109,7 @@ impl LocalFileSystem {
             children.iter().for_each(|node| {
                 let filename = node.name.as_bytes();
                 hasher.update(filename);
-                hasher.update(&node.content_hash);
+                hasher.update(node.content_hash);
             });
 
             return Ok(Node {

@@ -293,10 +293,9 @@ impl OAuthPublicClient {
 
     fn pkce_hash(&self) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(&self.pkce.as_bytes());
+        hasher.update(self.pkce.as_bytes());
         let result = hasher.finalize();
-        let res = URL_SAFE_NO_PAD.encode(&result);
-        res
+        URL_SAFE_NO_PAD.encode(result)
     }
 
     async fn wait_for_auth_code(&mut self) -> Result<()> {
@@ -373,7 +372,7 @@ impl OAuthPublicClient {
         mut stream: TcpStream,
         http_resp: Vec<u8>,
     ) -> io::Result<()> {
-        stream.write(&http_resp).await?;
+        stream.write_all(&http_resp).await?;
         stream.shutdown().await?;
         Ok(())
     }
@@ -383,7 +382,7 @@ impl OAuthPublicClient {
         let auth_code = self.auth_code.as_ref().unwrap();
         let params = [
             ("grant_type", &"authorization_code".to_string()),
-            ("code", &auth_code),
+            ("code", auth_code),
             ("code_verifier", &self.pkce),
             ("redirect_uri", &self.redirect_uri()),
         ];
@@ -442,7 +441,7 @@ impl OAuthPublicClient {
             return Err(AuthError::UnexpectedStatusCode { status_code });
         }
 
-        Ok(AuthToken::from_response(res, refresh_token).await?)
+        AuthToken::from_response(res, refresh_token).await
     }
 }
 

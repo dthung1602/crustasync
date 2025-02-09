@@ -23,7 +23,7 @@ pub fn print_version() {
     println!("{}", String::from(" ").default());
 }
 
-pub fn print_task_queues(queues: &Vec<Vec<Task>>) {
+pub fn print_task_queues(queues: &[Vec<Task>]) {
     for (i, queue) in queues.iter().enumerate() {
         println!("---- Priority task queue {i} ----");
         for task in queue {
@@ -34,7 +34,7 @@ pub fn print_task_queues(queues: &Vec<Vec<Task>>) {
 
 pub fn print_tree(node: &Node) {
     print_node_with_level(node, 0);
-    print!("\n");
+    println!();
 }
 
 const PRINT_LINE_WIDTH: usize = 64;

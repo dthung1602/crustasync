@@ -63,10 +63,7 @@ impl<'a> Iterator for NodeIterator<'a> {
     type Item = &'a Node;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let front = match self.dequeue.pop_front() {
-            None => return None,
-            Some(front) => front,
-        };
+        let front = self.dequeue.pop_front()?;
 
         if front.is_dir() {
             for child in &front.children {
@@ -92,7 +89,7 @@ impl<'a> IntoIterator for &'a Node {
 // region FileSystem
 // ------------------------------
 
-pub const CRUSTASYNC_CONFIG_FILE: &'static str = ".crustasync";
+pub const CRUSTASYNC_CONFIG_FILE: &str = ".crustasync";
 
 #[async_trait]
 pub trait FileSystem {

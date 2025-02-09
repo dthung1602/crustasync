@@ -270,7 +270,7 @@ impl GoogleDriveFileSystem {
                             node_type: NodeType::File,
                             name: gd_file.name.clone(),
                             path: child_path.clone(),
-                            updated_at: gd_file.modified_time.clone(),
+                            updated_at: gd_file.modified_time,
                             content_hash,
                             children: vec![],
                         };
@@ -300,7 +300,7 @@ impl GoogleDriveFileSystem {
             children.iter().for_each(|node| {
                 let filename = node.name.as_bytes();
                 hasher.update(filename);
-                hasher.update(&node.content_hash);
+                hasher.update(node.content_hash);
             });
 
             let node = Node {
@@ -512,7 +512,7 @@ impl FileSystem for GoogleDriveFileSystem {
 
         // actually upload the file
         // TODO upload in chunk for large file
-        let content = Vec::from(content.as_ref());
+        let content = Vec::from(content);
         let content_len = content.len().to_string();
         let header_value =
             HeaderValue::from_str(&content_len).map_err(|e| Error::Unknown(anyhow!(e)))?;

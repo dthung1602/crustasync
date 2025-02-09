@@ -25,11 +25,11 @@ impl Node {
     // Prefix file with ffff, dir with dddd
     // This is to distinguish between empty files and empty dirs
     pub fn node_hash(&self) -> ContentHash {
-        let mut hash = self.content_hash.clone();
+        let mut hash = self.content_hash;
         if self.is_file() {
-            hash[0..4].fill('f' as u8);
+            hash[0..4].fill(b'f');
         } else {
-            hash[0..4].fill('d' as u8);
+            hash[0..4].fill(b'd');
         }
         hash
     }
@@ -76,7 +76,7 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
 
     let mut src_content_table = build_node_hash_table(src_tree);
     // let dst_path_table = build_path_hash_table(&dst_tree);
-    let src_path_table = build_path_hash_table(&src_tree);
+    let src_path_table = build_path_hash_table(src_tree);
 
     let mut to_move = HashMap::new();
     let mut to_del = HashMap::new();
@@ -87,7 +87,7 @@ pub fn build_task_queue(src_tree: &Node, dst_tree: &Node) -> Vec<Vec<Task>> {
         // TODO handle circular rename
         // src and dst share the same file/directory
         if let Some(src_nodes) = src_content_table.get_mut(&dst_node.node_hash()) {
-            if src_nodes.len() > 0 {
+            if !src_nodes.is_empty() {
                 // if any of the src_nodes has the same path -> don't do anything
                 if let Some(idx) = src_nodes.iter().position(|n| n.path == dst_node.path) {
                     src_nodes.remove(idx);
@@ -323,7 +323,7 @@ fn dedup_del_tasks(tasks: Vec<Task>) -> Vec<Task> {
 
 async fn process_move(fs: Arc<dyn FileSystem>, from: &Path, to: &Path) -> Result<()> {
     info!("Start moving from {:?} to {:?}", from, to);
-    let res = fs.mv(&from, &to).await;
+    let res = fs.mv(from, to).await;
     if res.is_err() {
         error!("Error moving from {:?} to {:?}", from, to);
     } else {
@@ -338,8 +338,8 @@ async fn process_upload(
     path: &Path,
 ) -> Result<()> {
     info!("Start uploading to {:?}", path);
-    let content = src_fs.read(&path).await?;
-    let res = dst_fs.write(&path, &content).await;
+    let content = src_fs.read(path).await?;
+    let res = dst_fs.write(path, &content).await;
 
     if res.is_err() {
         error!("Error uploading to {:?}", path);
@@ -351,7 +351,7 @@ async fn process_upload(
 
 async fn process_create_dir(fs: Arc<dyn FileSystem>, path: &Path) -> Result<()> {
     info!("Start creating dir to {:?}", path);
-    let res = fs.mkdir(&path).await;
+    let res = fs.mkdir(path).await;
     if res.is_err() {
         error!("Error creating dir {:?}", path);
     } else {
@@ -362,7 +362,7 @@ async fn process_create_dir(fs: Arc<dyn FileSystem>, path: &Path) -> Result<()> 
 
 async fn process_delete(fs: Arc<dyn FileSystem>, path: &Path) -> Result<()> {
     info!("Start deleting {:?}", path);
-    let res = fs.rm(&path).await;
+    let res = fs.rm(path).await;
     if res.is_err() {
         error!("Error deleting {:?}", path);
     } else {
@@ -382,10 +382,10 @@ pub async fn process_tasks(
             // TODO avoid clone
             let dst_fs = dst_fs.clone();
             let box_future: Pin<Box<dyn Future<Output = Result<()>>>> = match task {
-                Task::Move { from, to } => Box::pin(process_move(dst_fs, &from, &to)),
-                Task::Upload { path } => Box::pin(process_upload(src_fs.clone(), dst_fs, &path)),
-                Task::CreateDir { path } => Box::pin(process_create_dir(dst_fs, &path)),
-                Task::Delete { path } => Box::pin(process_delete(dst_fs, &path)),
+                Task::Move { from, to } => Box::pin(process_move(dst_fs, from, to)),
+                Task::Upload { path } => Box::pin(process_upload(src_fs.clone(), dst_fs, path)),
+                Task::CreateDir { path } => Box::pin(process_create_dir(dst_fs, path)),
+                Task::Delete { path } => Box::pin(process_delete(dst_fs, path)),
             };
             box_future
         });

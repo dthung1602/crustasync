@@ -2,7 +2,6 @@
 
 use clap::Parser;
 use crustasync::cli::LogLevel;
-use crustasync::crustasyncfs::base::FileSystem;
 use crustasync::crustasyncfs::fs_from_location_str;
 use crustasync::diff::{build_task_queue, process_tasks};
 use crustasync::{cli, utils};
