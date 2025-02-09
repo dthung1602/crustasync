@@ -79,19 +79,16 @@ impl From<AuthError> for GDError {
 // https://developers.google.com/drive/api/guides/search-files
 // https://developers.google.com/drive/api/reference/rest/v3/files/list
 
-// TODO pub for debug
 #[derive(Debug, Deserialize, Clone)]
-pub struct GDFile {
-    pub id: String,
-    pub name: String,
+struct GDFile {
+    id: String,
+    name: String,
     #[serde(rename = "mimeType")]
-    pub mime_type: String,
+    mime_type: String,
     #[serde(rename = "modifiedTime")]
-    pub modified_time: DateTime<Utc>,
+    modified_time: DateTime<Utc>,
     #[serde(rename = "sha256Checksum")]
-    pub sha256_checksum: Option<String>,
-    #[serde(rename = "webContentLink")]
-    pub download_url: Option<String>,
+    sha256_checksum: Option<String>,
 }
 
 impl GDFile {
@@ -241,7 +238,6 @@ impl GoogleDriveFileSystem {
         node_id: &str,
         parent_path: &Path,
         is_root: bool,
-        path_to_meta: Arc<Mutex<HashMap<PathBuf, GDFile>>>,
     ) -> Result<Node> {
         let meta = self.metadata(node_id).await?;
 
@@ -251,7 +247,9 @@ impl GoogleDriveFileSystem {
             parent_path.to_path_buf().join(&meta.name)
         };
 
-        path_to_meta.lock().await.insert(path.clone(), meta.clone());
+        let mut path_to_meta = self.path_to_meta.write().await;
+        path_to_meta.insert(path.clone(), meta.clone());
+        drop(path_to_meta);
 
         // handle directory
         if meta.is_dir() {
@@ -261,8 +259,7 @@ impl GoogleDriveFileSystem {
                 .into_iter()
                 .map(|gd_file| async {
                     if gd_file.is_dir() {
-                        let path_to_meta = path_to_meta.clone();
-                        Box::pin(self.build_node(&gd_file.id, &path, false, path_to_meta)).await
+                        Box::pin(self.build_node(&gd_file.id, &path, false)).await
                     } else {
                         let child_path = path.join(&gd_file.name);
                         let content_hash = gd_file.content_hash()?;
@@ -274,7 +271,9 @@ impl GoogleDriveFileSystem {
                             content_hash,
                             children: vec![],
                         };
-                        path_to_meta.lock().await.insert(child_path, gd_file);
+                        let mut path_to_meta = self.path_to_meta.write().await;
+                        path_to_meta.insert(child_path, gd_file);
+                        drop(path_to_meta);
                         Ok(node)
                     }
                 })
@@ -739,15 +738,9 @@ impl FileSystem for GoogleDriveFileSystem {
         let root_dir_id = self.get_root_dir_id().await?;
         debug!("Root dir id: {}", root_dir_id);
 
-        // TODO consider make self.path_to_meta to arc mut
-        let path_to_meta = Arc::new(Mutex::new(HashMap::new()));
         let node = self
-            .build_node(&root_dir_id, "".as_ref(), true, path_to_meta.clone())
+            .build_node(&root_dir_id, "".as_ref(), true)
             .await?;
-
-        let mut self_ptm = self.path_to_meta.write().await;
-        self_ptm.clear();
-        self_ptm.extend(path_to_meta.lock().await.drain());
 
         match node.node_type {
             NodeType::File => Err(Error::ExpectDirectory(self.root_dir.clone())),
