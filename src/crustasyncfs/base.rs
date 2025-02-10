@@ -3,10 +3,11 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use log::debug;
 use serde::{Deserialize, Serialize};
 use serde_json as serde_lib;
 
-use crate::error::Result;
+use crate::error::{Result};
 
 // ------------------------------
 // region Node
@@ -105,15 +106,37 @@ pub trait FileSystem {
 
     async fn build_tree(&self) -> Result<Node>;
 
-    async fn sync_fs_to_file(&self) -> Result<()> {
+    async fn get_tree(&self, force_sync: bool) -> Result<Node> {
+        if force_sync {
+            debug!("Force sync fs");
+            self.sync_tree_to_file().await
+        } else {
+            match self.read_tree_from_file().await {
+                Ok(node) => {
+                    debug!("Read fs tree from file");
+                    Ok(node)
+                },
+                Err(_) => {
+                    debug!("Cannot read tree from file. Re-syncing");
+                    self.sync_tree_to_file().await
+                },
+            }
+        }
+    }
+
+    async fn sync_tree_to_file(&self) -> Result<Node> {
         let tree = self.build_tree().await?;
-        let serialized = serde_lib::to_string(&tree)?.into_bytes();
-        self.write(CRUSTASYNC_CONFIG_FILE.as_ref(), serialized.as_ref())
-            .await?;
+        self.write_tree_to_file(&tree).await?;
+        Ok(tree)
+    }
+
+    async fn write_tree_to_file(&self, tree: &Node) -> Result<()> {
+        let serialized = serde_lib::to_string(tree)?.into_bytes();
+        self.write(CRUSTASYNC_CONFIG_FILE.as_ref(), serialized.as_ref()).await?;
         Ok(())
     }
 
-    async fn read_fs_from_file(&self) -> Result<Node> {
+    async fn read_tree_from_file(&self) -> Result<Node> {
         let content = self.read(CRUSTASYNC_CONFIG_FILE.as_ref()).await?;
         let json_str = String::from_utf8(content)?;
         let tree: Node = serde_lib::from_str(&json_str)?;

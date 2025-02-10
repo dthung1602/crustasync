@@ -21,8 +21,8 @@ async fn main() -> anyhow::Result<()> {
     let src_fs = fs_from_location_str(&option.src_dir, &option).await?;
     let dest_fs = fs_from_location_str(&option.dst_dir, &option).await?;
 
-    let src_tree = src_fs.read_fs_from_file().await?;
-    let dest_tree = dest_fs.read_fs_from_file().await?;
+    let src_tree = src_fs.get_tree(true).await?;
+    let dest_tree = dest_fs.get_tree(true).await?;
 
     let queues = build_task_queue(&src_tree, &dest_tree);
 
@@ -31,7 +31,8 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if !option.dry_run {
-        process_tasks(src_fs, dest_fs, &queues).await?;
+        process_tasks(src_fs, dest_fs.clone(), &queues).await?;
+        dest_fs.write_tree_to_file(&src_tree).await?;
     }
 
     Ok(())
