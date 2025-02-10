@@ -26,11 +26,13 @@ async fn main() -> anyhow::Result<()> {
 
     let queues = build_task_queue(&src_tree, &dest_tree);
 
-    if option.log_level <= LogLevel::INFO {
+    if option.log_level <= LogLevel::INFO || option.dry_run {
         utils::print_task_queues(&queues);
     }
 
-    process_tasks(src_fs, dest_fs, &queues).await?;
+    if !option.dry_run {
+        process_tasks(src_fs, dest_fs, &queues).await?;
+    }
 
     Ok(())
 }
