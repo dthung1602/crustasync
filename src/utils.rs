@@ -1,3 +1,5 @@
+use std::usize;
+use unicode_width::UnicodeWidthStr;
 use crate::crustasyncfs::base::Node;
 use crate::diff::Task;
 
@@ -37,20 +39,27 @@ pub fn print_tree(node: &Node) {
     println!();
 }
 
-const PRINT_LINE_WIDTH: usize = 64;
+const PRINT_LINE_WIDTH: usize = 128;
 
 pub fn print_node_with_level(node: &Node, level: usize) {
     let left_padding = ' '.to_string().repeat(level * 4);
-    let node_name = &node.name;
+    let mut node_name = node.name.as_str();
+    if node_name.width() > PRINT_LINE_WIDTH - 12 {
+        node_name = &node.name[..PRINT_LINE_WIDTH - 12];
+    }
     let encoded = hex::encode(&node.content_hash[0..4]);
     let mut right_padding_len =
-        PRINT_LINE_WIDTH - left_padding.len() - node_name.len() - encoded.len();
+        PRINT_LINE_WIDTH - left_padding.width() - node_name.width() - encoded.width();
     let colored_node_name = if node.is_dir() {
         right_padding_len -= 1;
         format!("*{}", node.name.rgb(138, 173, 244))
     } else {
         node.name.default()
     };
+    if right_padding_len > PRINT_LINE_WIDTH {
+        // prevent overflow
+        right_padding_len = 1;
+    }
     let right_padding = ' '.to_string().repeat(right_padding_len);
     println!("{left_padding}{colored_node_name}{right_padding}{encoded}");
 

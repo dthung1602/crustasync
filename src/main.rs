@@ -27,7 +27,13 @@ async fn main() -> anyhow::Result<()> {
     let queues = build_task_queue(&src_tree, &dest_tree);
 
     if option.log_level <= LogLevel::INFO || option.dry_run {
+        println!("\n\nSOURCE TREE:\n");
+        utils::print_tree(&src_tree);
+        println!("\n\nDEST TREE:\n");
+        utils::print_tree(&dest_tree);
+        println!("\n\nTASK QUEUES:\n");
         utils::print_task_queues(&queues);
+        println!("\n\n");
     }
 
     if !option.dry_run {

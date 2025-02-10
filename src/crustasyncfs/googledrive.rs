@@ -144,7 +144,7 @@ const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 
 const GOOGLE_DRIVE_API_URL: &str = "https://www.googleapis.com/drive/v3";
 const GOOGLE_DRIVE_UPLOAD_API_URL: &str = "https://www.googleapis.com/upload/drive/v3/files";
-const GOOGLE_DRIVE_LS_PAGE_SIZE: &str = "10";
+const GOOGLE_DRIVE_LS_PAGE_SIZE: &str = "200";
 
 const GOOGLE_DRIVE_FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 
