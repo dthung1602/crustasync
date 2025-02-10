@@ -1,6 +1,6 @@
 [package]
 name = "crustasync"
-description = "A file syncing cli/lib written in the crustacean language"
+description = "A directory syncing cli / lib"
 version = "0.1.0"
 edition = "2021"
 

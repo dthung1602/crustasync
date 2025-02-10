@@ -7,7 +7,7 @@ use log::debug;
 use serde::{Deserialize, Serialize};
 use serde_json as serde_lib;
 
-use crate::error::{Result};
+use crate::error::Result;
 
 // ------------------------------
 // region Node
@@ -115,11 +115,11 @@ pub trait FileSystem {
                 Ok(node) => {
                     debug!("Read fs tree from file");
                     Ok(node)
-                },
+                }
                 Err(_) => {
                     debug!("Cannot read tree from file. Re-syncing");
                     self.sync_tree_to_file().await
-                },
+                }
             }
         }
     }
@@ -132,7 +132,8 @@ pub trait FileSystem {
 
     async fn write_tree_to_file(&self, tree: &Node) -> Result<()> {
         let serialized = serde_lib::to_string(tree)?.into_bytes();
-        self.write(CRUSTASYNC_CONFIG_FILE.as_ref(), serialized.as_ref()).await?;
+        self.write(CRUSTASYNC_CONFIG_FILE.as_ref(), serialized.as_ref())
+            .await?;
         Ok(())
     }
 

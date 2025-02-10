@@ -33,10 +33,20 @@ fn default_cfg_path() -> OsString {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct CLIOption {
-    #[arg(value_name = "SRC_DIR", index = 1)]
+    #[arg(
+        value_name = "SRC_DIR",
+        index = 1,
+        help = "Source directory.\
+                \nCan be relative or absolute local path.\
+                \nUse prefix `gd:` to indicate a GoogleDrive directory"
+    )]
     pub src_dir: String,
 
-    #[arg(value_name = "DST_DIR", index = 2)]
+    #[arg(
+        value_name = "DST_DIR",
+        index = 2,
+        help = "Destination directory, same format as SRC_DIR"
+    )]
     pub dst_dir: String,
 
     #[arg(long, action)]

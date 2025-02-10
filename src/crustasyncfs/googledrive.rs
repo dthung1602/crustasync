@@ -233,12 +233,7 @@ impl GoogleDriveFileSystem {
         Ok(headers)
     }
 
-    async fn build_node(
-        &self,
-        node_id: &str,
-        parent_path: &Path,
-        is_root: bool,
-    ) -> Result<Node> {
+    async fn build_node(&self, node_id: &str, parent_path: &Path, is_root: bool) -> Result<Node> {
         let meta = self.metadata(node_id).await?;
 
         let path = if is_root {
@@ -738,9 +733,7 @@ impl FileSystem for GoogleDriveFileSystem {
         let root_dir_id = self.get_root_dir_id().await?;
         debug!("Root dir id: {}", root_dir_id);
 
-        let node = self
-            .build_node(&root_dir_id, "".as_ref(), true)
-            .await?;
+        let node = self.build_node(&root_dir_id, "".as_ref(), true).await?;
 
         match node.node_type {
             NodeType::File => Err(Error::ExpectDirectory(self.root_dir.clone())),
